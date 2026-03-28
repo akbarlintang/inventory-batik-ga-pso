@@ -1962,6 +1962,7 @@ def inventory_collab_view(request):
             # the user-supplied hyperparameters unchanged.
             # ----------------------------------------------------------------
             global_pso_params = None
+            pso_duration      = 0.0
  
             if use_pso:
                 PSO_OUTLET_ID = 3
@@ -2013,12 +2014,14 @@ def inventory_collab_view(request):
                         continue
 
                 if products_data:
+                    pso_start = time.time()
                     global_pso_params, _, _ = pso_optimize_hyperparameters_global(
                         products_data,
                         n_particles     = pso_n_particles,
                         n_iters         = pso_n_iters,
                         stockout_weight = stockout_weight,
                     )
+                    pso_duration = time.time() - pso_start
  
             # ----------------------------------------------------------------
             # GA PHASE — loop outlets × items, use cached PSO params
@@ -2082,8 +2085,8 @@ def inventory_collab_view(request):
  
                     # Resolve final GA hyperparameters from PSO cache
                     if global_pso_params:
-                        final_pop = max(global_pso_params['population_size'], pop_size)
-                        final_gen = max(global_pso_params['num_generations'],  num_generations)
+                        final_pop = global_pso_params['population_size']
+                        final_gen = global_pso_params['num_generations']
                         final_cr  = global_pso_params['crossover_rate']
                         final_mr  = global_pso_params['mutation_rate']
                         pso_meta  = {
@@ -2498,6 +2501,8 @@ def inventory_collab_view(request):
                 'total_purchases_total':         sum(i['purchases_total'] for i in total_data),
                 'total_stockout_total':          sum(i['stockout_total']  for i in total_data),
                 'pso_used':                      use_pso,
+                'pso_best_params':               global_pso_params,
+                'pso_duration':                  round(pso_duration, 2) if use_pso else 0,
             }
  
             return render(request, 'inventory_collab/calculation_collab.html', context)
