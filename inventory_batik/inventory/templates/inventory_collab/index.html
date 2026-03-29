@@ -37,9 +37,9 @@
 
         <br>
 
-        <div class="text-right">
+        <!-- <div class="text-right">
             <a href="{% url 'inventory-collab.input' %}" class="btn btn-primary" data-toggle="tooltip" title="Manual Input">Manual Input <i class="fa fa-arrow-right ml-1"></i></a>
-        </div>
+        </div> -->
         
         <form method="post" enctype="multipart/form-data">
             {% csrf_token %}
@@ -51,14 +51,14 @@
                 <div class="form-group">
                     <label for="num_generations">Number of Generations</label>
                     <input type="number" name="num_generations" class="form-control" id="num_generations" placeholder="50">
-                    <small class="form-text text-muted">Used as ceiling when PSO is on</small>
+                    <small class="form-text text-muted">Ignored when PSO is on</small>
                 </div>
                 </div>
                 <div class="col-6">
                 <div class="form-group">
                     <label for="population_size">Population Size</label>
                     <input type="number" name="population_size" class="form-control" id="population_size" placeholder="30">
-                    <small class="form-text text-muted">Used as ceiling when PSO is on</small>
+                    <small class="form-text text-muted">Ignored when PSO is on</small>
                 </div>
                 </div>
             </div>
@@ -94,7 +94,7 @@
                 </label>
             </div>
             <small class="form-text text-muted mb-3 d-block">
-                PSO automatically finds the best crossover &amp; mutation rates before running the final GA.
+                PSO automatically finds the best GA hyperparameters.
             </small>
 
             <!-- PSO settings (hidden until toggled) -->
@@ -134,8 +134,10 @@
                 </div>
             </div>
 
-            <button type="submit" class="btn btn-success">Calculate</button>
-            <small class="text-muted ml-2" id="mode_label">Mode: GA only</small>
+            <div id="submit-btn-group" class="mb-3">
+                <button type="submit" class="btn btn-success">Calculate</button>
+                <small class="text-muted ml-2" id="mode_label">Mode: GA only</small>
+            </div>
         </form>
     </div>
 </div>
