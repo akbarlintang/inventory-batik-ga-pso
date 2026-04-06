@@ -388,14 +388,14 @@
                         <div class="row mt-2">
                             <div class="col-3">
                                 <div class="card card-body py-2 text-center">
-                                    <small class="text-muted">Population Size</small>
-                                    <strong class="d-block">{{ pso_best_params.population_size }}</strong>
+                                    <small class="text-muted">Generations</small>
+                                    <strong class="d-block">{{ pso_best_params.num_generations }}</strong>
                                 </div>
                             </div>
                             <div class="col-3">
                                 <div class="card card-body py-2 text-center">
-                                    <small class="text-muted">Generations</small>
-                                    <strong class="d-block">{{ pso_best_params.num_generations }}</strong>
+                                    <small class="text-muted">Population Size</small>
+                                    <strong class="d-block">{{ pso_best_params.population_size }}</strong>
                                 </div>
                             </div>
                             <div class="col-3">
@@ -411,9 +411,9 @@
                                 </div>
                             </div>
                         </div>
-                        {% if pso_duration %}
+                        <!-- {% if pso_duration %}
                             <small class="text-muted mt-2 d-block">PSO search completed in {{ pso_duration }}s</small>
-                        {% endif %}
+                        {% endif %} -->
                     {% else %}
                         <p class="text-muted small mb-0">Using manual hyperparameters.</p>
                     {% endif %}
@@ -425,7 +425,8 @@
                 <h4 class="mt-3">Collaborative Inventory</h4>
 
                 <div class="mt-3">
-                    <h6 class="text-right">Duration : {{ total_calc_duration }}</h6>
+                    <!-- <h6 class="text-right">Duration : {{ total_calc_duration }}</h6> -->
+                    <h6 class="text-right">Duration : {{ total_duration }}</h6>
                     <h5>Periodic Review Results</h5>
                     <table class="table table-bordered table-striped">
                         <thead>

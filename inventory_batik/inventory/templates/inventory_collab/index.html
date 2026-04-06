@@ -51,7 +51,6 @@
                 <div class="form-group">
                     <label for="num_generations">Number of Generations</label>
                     <input type="number" name="num_generations" class="form-control" id="num_generations" placeholder="50">
-                    <small class="form-text text-muted">Ignored when PSO is on</small>
                 </div>
                 </div>
                 <div class="col-6">
@@ -156,17 +155,20 @@
 function togglePso(cb) {
     var psoFields  = document.getElementById('pso_fields');
     var modeLabel  = document.getElementById('mode_label');
+    var popInput    = document.getElementById('population_size');
     var crInput    = document.getElementById('crossover_rate');
     var mrInput    = document.getElementById('mutation_rate');
 
     if (cb.checked) {
         psoFields.style.display  = 'block';
         modeLabel.textContent    = 'Mode: PSO + GA';
+        popInput.style.opacity    = '0.4';
         crInput.style.opacity    = '0.4';
         mrInput.style.opacity    = '0.4';
     } else {
         psoFields.style.display  = 'none';
         modeLabel.textContent    = 'Mode: GA only';
+        popInput.style.opacity    = '1';
         crInput.style.opacity    = '1';
         mrInput.style.opacity    = '1';
     }

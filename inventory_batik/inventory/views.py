@@ -1094,45 +1094,45 @@ def find_rss(to, product):
 # ---------------------------------------------------------------------------
 # Fitness / cost functions
 # ---------------------------------------------------------------------------
- 
 def min_fitness(product, demand, init_R, init_s, init_S, init_T,
-                purchases_freq, tot_lost):
+                purchases_freq, tot_lost, stockout_weight=500.0):
     """
     Compute total inventory cost for a given (R, s, S, T) combination.
     Returns (total_cost, total_stockout_units).
     """
     half_demand = demand[:int(init_T)]
     init_R      = max(init_R, 1)
- 
+
     if purchases_freq <= 0:
         purchases_freq = 1
- 
+
     tot_demand         = round(sum(half_demand))
     mean_daily_demand  = np.mean(half_demand) if half_demand else 0
     std_dev_monthly    = np.std(half_demand, ddof=1) if len(half_demand) > 1 else 0
     std_dev_daily      = std_dev_monthly / np.sqrt(init_T) if init_T > 0 else 1e-9
     total_daily_demand = round(tot_demand / init_T) if init_T > 0 else 0
- 
+
     biaya_order = product.get("biaya_order", product.get("biaya_pesan", 0))
- 
+
     c_order        = biaya_order * (init_T / (purchases_freq * init_R))
     c_hold         = (product["biaya_simpan"] * round((init_S + init_s) / 2)
                       + round((tot_demand * init_R) / purchases_freq))
     total_stockout = round(sum(tot_lost))
- 
+
     if std_dev_daily > 0:
         def integrand(x):
             return (x - total_daily_demand) * norm.pdf(x, mean_daily_demand, std_dev_daily)
         E_Rv, _ = quad(integrand, total_daily_demand, np.inf)
     else:
         E_Rv = 0.0
- 
+
     c_stockout = product["biaya_kekurangan"] * E_Rv
     c_total    = c_order + c_hold + c_stockout
- 
-    return c_total, total_stockout
- 
- 
+
+    composite = c_total + stockout_weight * total_stockout
+
+    return composite, total_stockout
+
 def calculate_inventory_cost(product_list, to_list):
     """Compute EOQ-based inventory cost for a list of products (used for histogram)."""
     inventory_cost_list = []
@@ -1299,8 +1299,8 @@ def fix_S_s(individual):
 # ---------------------------------------------------------------------------
  
 def genetic_algorithm(product_data, population_size, num_generations,
-                       crossover_rate, mutation_rate,
-                       daily_sales, daily_purchases):
+        crossover_rate, mutation_rate,
+        daily_sales, daily_purchases, stockout_weight=500.0):
     """
     Run a genetic algorithm to minimise total inventory cost for the
     periodic (R, s, S) review policy.
@@ -1360,7 +1360,7 @@ def genetic_algorithm(product_data, population_size, num_generations,
         fitness_scores = []
         for individual in population:
             prod_sim, demand_res, iR, is_, iS, iT, ipf, itl = individual
-            cost, stockout = min_fitness(prod_sim, demand_res, iR, is_, iS, iT, ipf, itl)
+            cost, stockout = min_fitness(prod_sim, demand_res, iR, is_, iS, iT, ipf, itl, stockout_weight=stockout_weight)
             fitness_scores.append((cost, stockout))
  
         if not population:
@@ -1418,7 +1418,8 @@ def genetic_algorithm(product_data, population_size, num_generations,
     best_total_cost, best_to = min_fitness(
         best_product, best_demand,
         best_R, best_s, best_S, best_T,
-        best_purchases_freq, best_tot_lost
+        best_purchases_freq, best_tot_lost,
+        stockout_weight=stockout_weight
     )
  
     (inventory_level_list, purchases_list, sales_list,
@@ -1467,47 +1468,44 @@ def genetic_algorithm(product_data, population_size, num_generations,
 # Bounds for each hyperparameter dimension
 PSO_BOUNDS = {
     'population_size':  (10,   80),
-    'num_generations':  (10,   80),
     'crossover_rate':   (0.5,  1.0),
     'mutation_rate':    (0.01, 0.5),
 }
- 
+
 # Lightweight GA budget used *inside* PSO evaluation
 PSO_INNER_POP  = 15
 PSO_INNER_GEN  = 15
- 
+
 # PSO algorithm settings
 PSO_N_PARTICLES = 10
 PSO_N_ITERS     = 20
 PSO_W           = 0.7    # inertia
 PSO_C1          = 1.5    # cognitive coefficient
 PSO_C2          = 1.5    # social coefficient
- 
+
 # Weight applied to stockout units in the composite PSO fitness.
 # Tune this to express how many rupiah one unit of stockout is worth
 # relative to the cost numbers produced by min_fitness.
-PSO_STOCKOUT_WEIGHT = 1.0
- 
- 
+PSO_STOCKOUT_WEIGHT = 500.0
+
 def _clip_particle(position):
-    """Clip a PSO position vector to the declared bounds."""
-    lo = [PSO_BOUNDS['population_size'][0],  PSO_BOUNDS['num_generations'][0],
-          PSO_BOUNDS['crossover_rate'][0],    PSO_BOUNDS['mutation_rate'][0]]
-    hi = [PSO_BOUNDS['population_size'][1],  PSO_BOUNDS['num_generations'][1],
-          PSO_BOUNDS['crossover_rate'][1],    PSO_BOUNDS['mutation_rate'][1]]
-    return [max(lo[i], min(hi[i], position[i])) for i in range(4)]
- 
- 
+    lo = [PSO_BOUNDS['population_size'][0],
+        PSO_BOUNDS['crossover_rate'][0],
+        PSO_BOUNDS['mutation_rate'][0]]
+    hi = [PSO_BOUNDS['population_size'][1],
+        PSO_BOUNDS['crossover_rate'][1],
+        PSO_BOUNDS['mutation_rate'][1]]
+    return [max(lo[i], min(hi[i], position[i])) for i in range(3)]
+
 def _decode_particle(position):
     """
     Convert a raw PSO position vector to typed hyperparameters.
     Integer dimensions are rounded; floats are kept as-is.
     """
     pop_size        = max(2, int(round(position[0])))
-    num_generations = max(1, int(round(position[1])))
-    crossover_rate  = float(position[2])
-    mutation_rate   = float(position[3])
-    return pop_size, num_generations, crossover_rate, mutation_rate
+    crossover_rate  = float(position[1])
+    mutation_rate   = float(position[2])
+    return pop_size, crossover_rate, mutation_rate
 
 PSO_INNER_POP = 5   # hard cap for evaluation runs
 PSO_INNER_GEN = 5   # hard cap for evaluation runs
@@ -1530,6 +1528,7 @@ def _evaluate_particle(position, product_data, daily_sales, daily_purchases,
             product_data, pop_size, num_generations,
             crossover_rate, mutation_rate,
             daily_sales, daily_purchases,
+            stockout_weight=stockout_weight
         )
         best_total_cost = result[16]
         tot_lost        = result[9]
@@ -1700,7 +1699,7 @@ def run_with_pso(product_data, daily_sales, daily_purchases,
  
     ga_result = genetic_algorithm(
         product_data, final_pop, final_gen, final_cr, final_mr,
-        daily_sales, daily_purchases,
+        daily_sales, daily_purchases, stockout_weight=stockout_weight
     )
  
     return ga_result, pso_meta
@@ -1945,6 +1944,9 @@ def inventory_collab_view(request):
  
         outlets = Outlet.objects.all()
         items   = Item.objects.filter(type="JADI")
+
+        total_duration      = 0.0
+        total_start = time.time()
  
         # ---------------------------------------------------------------- #
         # Superadmin branch
@@ -2017,6 +2019,7 @@ def inventory_collab_view(request):
                     pso_start = time.time()
                     global_pso_params, _, _ = pso_optimize_hyperparameters_global(
                         products_data,
+                        num_generations = num_generations,
                         n_particles     = pso_n_particles,
                         n_iters         = pso_n_iters,
                         stockout_weight = stockout_weight,
@@ -2086,7 +2089,7 @@ def inventory_collab_view(request):
                     # Resolve final GA hyperparameters from PSO cache
                     if global_pso_params:
                         final_pop = global_pso_params['population_size']
-                        final_gen = global_pso_params['num_generations']
+                        final_gen = num_generations
                         final_cr  = global_pso_params['crossover_rate']
                         final_mr  = global_pso_params['mutation_rate']
                         pso_meta  = {
@@ -2478,7 +2481,9 @@ def inventory_collab_view(request):
                     mid['inventory_level_plot'] = base64.b64encode(buf.read()).decode('utf-8')
                     buf.close()
                     plt.close()
- 
+
+            total_duration = time.time() - total_start
+
             context = {
                 'data_all':                      data_all,
                 'total_data':                    total_data,
@@ -2503,6 +2508,7 @@ def inventory_collab_view(request):
                 'pso_used':                      use_pso,
                 'pso_best_params':               global_pso_params,
                 'pso_duration':                  round(pso_duration, 2) if use_pso else 0,
+                'total_duration':                format_seconds(total_duration) if total_duration else 0,
             }
  
             return render(request, 'inventory_collab/calculation_collab.html', context)
@@ -3507,56 +3513,58 @@ def _parse_post_int(post, key, default):
 def format_seconds(seconds):
     return str(timedelta(seconds=round(seconds)))
 
-def _evaluate_particle_global(position, products_data, stockout_weight=PSO_STOCKOUT_WEIGHT):
+def _evaluate_particle_global(position, products_data, num_generations, stockout_weight=PSO_STOCKOUT_WEIGHT):
     """
     Evaluate a PSO particle against ALL products and return the average
     composite fitness. This ensures PSO finds hyperparameters that work
     well across the entire catalogue, not just one item.
     """
-    pop_size, num_generations, crossover_rate, mutation_rate = _decode_particle(position)
-    pop_size        = min(pop_size,        PSO_INNER_POP)
-    num_generations = min(num_generations, PSO_INNER_GEN)
+    pop_size, crossover_rate, mutation_rate = _decode_particle(position)
+    pop_size = min(pop_size, PSO_INNER_POP)
+    inner_gen = min(num_generations, PSO_INNER_GEN)
 
     scores = []
     for product_data, daily_sales, daily_purchases in products_data:
         try:
-            result          = genetic_algorithm(
-                product_data, pop_size, num_generations,
+            result = genetic_algorithm(
+                product_data, pop_size, inner_gen,
                 crossover_rate, mutation_rate,
                 daily_sales, daily_purchases,
             )
             best_total_cost = result[16]
-            total_stockout  = round(sum(result[9]))
+            total_stockout = round(sum(result[9]))
             scores.append(best_total_cost + stockout_weight * total_stockout)
         except Exception:
             scores.append(float('inf'))
 
-    return np.mean(scores) if scores else float('inf')
+    return float(np.mean(scores)) if scores else float('inf')
 
 def pso_optimize_hyperparameters_global(products_data,
-                                         n_particles=PSO_N_PARTICLES,
-                                         n_iters=PSO_N_ITERS,
-                                         w=PSO_W, c1=PSO_C1, c2=PSO_C2,
-                                         stockout_weight=PSO_STOCKOUT_WEIGHT):
+    num_generations,
+    n_particles=PSO_N_PARTICLES,
+    n_iters=PSO_N_ITERS,
+    w=PSO_W, c1=PSO_C1, c2=PSO_C2,
+    stockout_weight=PSO_STOCKOUT_WEIGHT):
     """
     Run PSO once across all products to find a single unified hyperparameter
     set. Each particle is scored as the average fitness across all items.
 
     Returns best_params dict, best_score, history.
     """
-    lo  = [PSO_BOUNDS['population_size'][0], PSO_BOUNDS['num_generations'][0],
-           PSO_BOUNDS['crossover_rate'][0],   PSO_BOUNDS['mutation_rate'][0]]
-    hi  = [PSO_BOUNDS['population_size'][1], PSO_BOUNDS['num_generations'][1],
-           PSO_BOUNDS['crossover_rate'][1],   PSO_BOUNDS['mutation_rate'][1]]
-    dim = 4
+    lo  = [PSO_BOUNDS['population_size'][0], PSO_BOUNDS['crossover_rate'][0],
+        PSO_BOUNDS['mutation_rate'][0]]
+    hi  = [PSO_BOUNDS['population_size'][1], PSO_BOUNDS['crossover_rate'][1],
+        PSO_BOUNDS['mutation_rate'][1]]
+    dim = 3
 
-    positions  = [[random.uniform(lo[d], hi[d]) for d in range(dim)] for _ in range(n_particles)]
-    velocities = [[random.uniform(-(hi[d]-lo[d])*0.1, (hi[d]-lo[d])*0.1)
-                   for d in range(dim)] for _ in range(n_particles)]
+    positions  = [[random.uniform(lo[d], hi[d]) for d in range(dim)]
+        for _ in range(n_particles)]
+    velocities = [[random.uniform(-(hi[d] - lo[d]) * 0.1, (hi[d] - lo[d]) * 0.1)
+        for d in range(dim)] for _ in range(n_particles)]
 
     personal_best_pos   = [p[:] for p in positions]
     personal_best_score = [
-        _evaluate_particle_global(p, products_data, stockout_weight)
+        _evaluate_particle_global(p, products_data, num_generations, stockout_weight)
         for p in positions
     ]
 
@@ -3580,7 +3588,7 @@ def pso_optimize_hyperparameters_global(products_data,
                 positions[i][d] + velocities[i][d] for d in range(dim)
             ])
 
-            score = _evaluate_particle_global(positions[i], products_data, stockout_weight)
+            score = _evaluate_particle_global(positions[i], products_data, num_generations, stockout_weight)
 
             if score < personal_best_score[i]:
                 personal_best_score[i] = score
@@ -3592,10 +3600,12 @@ def pso_optimize_hyperparameters_global(products_data,
 
         history.append(global_best_score)
 
-    pop_size, num_gen, cr, mr = _decode_particle(global_best_pos)
-    return (
-        {'population_size': pop_size, 'num_generations': num_gen,
-         'crossover_rate': round(cr, 4), 'mutation_rate': round(mr, 4)},
-        global_best_score,
-        history,
-    )
+    pop_size, cr, mr = _decode_particle(global_best_pos)
+    best_params = {
+        'population_size': pop_size,
+        'num_generations': num_generations,
+        'crossover_rate':  round(cr, 4),
+        'mutation_rate':   round(mr, 4),
+    }
+
+    return best_params, global_best_score, history
