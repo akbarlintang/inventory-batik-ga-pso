@@ -44,6 +44,10 @@ from matplotlib.ticker import FuncFormatter
 from datetime import datetime
 import time
 
+from skopt import gp_minimize
+from skopt.space import Integer, Real
+from skopt.utils import use_named_args
+
 from django.shortcuts import redirect
 
 def anonymous_required(view_function):
@@ -977,6 +981,29 @@ def export_view(request):
 
     return render(request, 'export/index.html', context)
 
+BO_BOUNDS = {
+    'population_size': (10,   80),
+    'crossover_rate':  (0.5,  1.0),
+    'mutation_rate':   (0.01, 0.5),
+}
+
+# Budget ringan yang dipakai *di dalam* setiap evaluasi BO
+BO_INNER_POP   = 5
+BO_INNER_GEN   = 5
+
+# Jumlah evaluasi BO
+BO_N_CALLS     = 20   # total evaluasi (termasuk n_initial_points)
+BO_N_INITIAL   = 5    # titik acak awal sebelum GP mulai memodelkan
+
+BO_STOCKOUT_WEIGHT = 500.0
+
+# Search space untuk skopt
+BO_SPACE = [
+    Integer(BO_BOUNDS['population_size'][0], BO_BOUNDS['population_size'][1], name='population_size'),
+    Real   (BO_BOUNDS['crossover_rate'][0],  BO_BOUNDS['crossover_rate'][1],  name='crossover_rate'),
+    Real   (BO_BOUNDS['mutation_rate'][0],   BO_BOUNDS['mutation_rate'][1],   name='mutation_rate'),
+]
+
 def daily_demand(mean, sd, zero_threshold_factor=1.0):
     """Return a stochastic daily demand value (may be 0)."""
     random_num = np.random.uniform(0, 1)
@@ -1444,294 +1471,7 @@ def genetic_algorithm(product_data, population_size, num_generations,
         first_inventory_level_list, first_restock_data,
         first_calc_duration, best_calc_duration,
     )
- 
- 
-# ===========================================================================
-# PSO — Hyperparameter Optimiser
-# ===========================================================================
-#
-# Search space (4 dimensions):
-#   [0] population_size   integer  10 – 80
-#   [1] num_generations   integer  10 – 80
-#   [2] crossover_rate    float    0.5 – 1.0
-#   [3] mutation_rate     float    0.01 – 0.5
-#
-# Fitness (minimise):
-#   pso_fitness = best_total_cost + stockout_weight * total_stockout
-#
-# Strategy:
-#   Run PSO with a lightweight GA budget (pop=15, gen=15) to keep wall-time
-#   acceptable.  Once the best hyperparameters are found, one final full GA
-#   run is executed with those params and the caller's requested budget.
-# ===========================================================================
- 
-# Bounds for each hyperparameter dimension
-PSO_BOUNDS = {
-    'population_size':  (10,   80),
-    'crossover_rate':   (0.5,  1.0),
-    'mutation_rate':    (0.01, 0.5),
-}
 
-# Lightweight GA budget used *inside* PSO evaluation
-PSO_INNER_POP  = 15
-PSO_INNER_GEN  = 15
-
-# PSO algorithm settings
-PSO_N_PARTICLES = 10
-PSO_N_ITERS     = 20
-PSO_W           = 0.7    # inertia
-PSO_C1          = 1.5    # cognitive coefficient
-PSO_C2          = 1.5    # social coefficient
-
-# Weight applied to stockout units in the composite PSO fitness.
-# Tune this to express how many rupiah one unit of stockout is worth
-# relative to the cost numbers produced by min_fitness.
-PSO_STOCKOUT_WEIGHT = 500.0
-
-def _clip_particle(position):
-    lo = [PSO_BOUNDS['population_size'][0],
-        PSO_BOUNDS['crossover_rate'][0],
-        PSO_BOUNDS['mutation_rate'][0]]
-    hi = [PSO_BOUNDS['population_size'][1],
-        PSO_BOUNDS['crossover_rate'][1],
-        PSO_BOUNDS['mutation_rate'][1]]
-    return [max(lo[i], min(hi[i], position[i])) for i in range(3)]
-
-def _decode_particle(position):
-    """
-    Convert a raw PSO position vector to typed hyperparameters.
-    Integer dimensions are rounded; floats are kept as-is.
-    """
-    pop_size        = max(2, int(round(position[0])))
-    crossover_rate  = float(position[1])
-    mutation_rate   = float(position[2])
-    return pop_size, crossover_rate, mutation_rate
-
-PSO_INNER_POP = 5   # hard cap for evaluation runs
-PSO_INNER_GEN = 5   # hard cap for evaluation runs
-
-def _evaluate_particle(position, product_data, daily_sales, daily_purchases,
-                        stockout_weight=PSO_STOCKOUT_WEIGHT):
-    pop_size, num_generations, crossover_rate, mutation_rate = _decode_particle(position)
-    """
-    Run the GA with the hyperparameters encoded in *position* and return
-    the composite fitness score (lower is better).
-
-    Uses a fixed lightweight inner budget so each PSO evaluation is cheap.
-    """
-    
-    pop_size        = min(pop_size, PSO_INNER_POP)
-    num_generations = min(num_generations, PSO_INNER_GEN)
-
-    try:
-        result          = genetic_algorithm(
-            product_data, pop_size, num_generations,
-            crossover_rate, mutation_rate,
-            daily_sales, daily_purchases,
-            stockout_weight=stockout_weight
-        )
-        best_total_cost = result[16]
-        tot_lost        = result[9]
-        total_stockout  = round(sum(tot_lost))
-        return best_total_cost + stockout_weight * total_stockout
-    except Exception:
-        # If a particle configuration produces a degenerate GA run,
-        # return a very large penalty so PSO steers away from it.
-        return float('inf')
-
-def pso_optimize_hyperparameters(product_data, daily_sales, daily_purchases,
-                                  n_particles=PSO_N_PARTICLES,
-                                  n_iters=PSO_N_ITERS,
-                                  w=PSO_W, c1=PSO_C1, c2=PSO_C2,
-                                  stockout_weight=PSO_STOCKOUT_WEIGHT):
-    """
-    Run Particle Swarm Optimisation to find the best GA hyperparameters
-    for the given product and demand data.
- 
-    Returns
-    -------
-    best_params : dict
-        Keys: population_size, num_generations, crossover_rate, mutation_rate
-    best_score : float
-        The composite inventory cost achieved by the best hyperparameter set
-    history : list of float
-        Global best score at each PSO iteration (for plotting convergence)
-    """
-    lo = [PSO_BOUNDS['population_size'][0],  PSO_BOUNDS['num_generations'][0],
-          PSO_BOUNDS['crossover_rate'][0],    PSO_BOUNDS['mutation_rate'][0]]
-    hi = [PSO_BOUNDS['population_size'][1],  PSO_BOUNDS['num_generations'][1],
-          PSO_BOUNDS['crossover_rate'][1],    PSO_BOUNDS['mutation_rate'][1]]
- 
-    dim = 4  # number of hyperparameter dimensions
- 
-    # ---- Initialise particles ----------------------------------------- #
-    positions  = []
-    velocities = []
- 
-    for _ in range(n_particles):
-        pos = [random.uniform(lo[d], hi[d]) for d in range(dim)]
-        vel = [random.uniform(-(hi[d] - lo[d]) * 0.1,
-                               (hi[d] - lo[d]) * 0.1) for d in range(dim)]
-        positions.append(pos)
-        velocities.append(vel)
- 
-    # Personal bests
-    personal_best_pos   = [p[:] for p in positions]
-    personal_best_score = [
-        _evaluate_particle(p, product_data, daily_sales, daily_purchases, stockout_weight)
-        for p in positions
-    ]
- 
-    # Global best
-    global_best_idx   = int(np.argmin(personal_best_score))
-    global_best_pos   = personal_best_pos[global_best_idx][:]
-    global_best_score = personal_best_score[global_best_idx]
- 
-    history = [global_best_score]
- 
-    # ---- PSO main loop ------------------------------------------------- #
-    for iteration in range(n_iters):
-        for i in range(n_particles):
-            r1 = [random.random() for _ in range(dim)]
-            r2 = [random.random() for _ in range(dim)]
- 
-            # Velocity update
-            velocities[i] = [
-                w * velocities[i][d]
-                + c1 * r1[d] * (personal_best_pos[i][d] - positions[i][d])
-                + c2 * r2[d] * (global_best_pos[d]       - positions[i][d])
-                for d in range(dim)
-            ]
- 
-            # Position update and clipping to bounds
-            positions[i] = _clip_particle([
-                positions[i][d] + velocities[i][d] for d in range(dim)
-            ])
- 
-            # Evaluate
-            score = _evaluate_particle(
-                positions[i], product_data, daily_sales, daily_purchases, stockout_weight
-            )
- 
-            # Update personal best
-            if score < personal_best_score[i]:
-                personal_best_score[i] = score
-                personal_best_pos[i]   = positions[i][:]
- 
-            # Update global best
-            if score < global_best_score:
-                global_best_score = score
-                global_best_pos   = positions[i][:]
- 
-        history.append(global_best_score)
- 
-    # ---- Decode and return best hyperparameters ----------------------- #
-    pop_size, num_gen, cr, mr = _decode_particle(global_best_pos)
- 
-    best_params = {
-        'population_size':  pop_size,
-        'num_generations':  num_gen,
-        'crossover_rate':   round(cr, 4),
-        'mutation_rate':    round(mr, 4),
-    }
- 
-    return best_params, global_best_score, history
- 
- 
-# ---------------------------------------------------------------------------
-# Convenience wrapper used by both views
-# ---------------------------------------------------------------------------
- 
-def run_with_pso(product_data, daily_sales, daily_purchases,
-                 user_pop_size, user_num_gen, user_cr, user_mr,
-                 use_pso=True,
-                 pso_n_particles=PSO_N_PARTICLES,
-                 pso_n_iters=PSO_N_ITERS,
-                 stockout_weight=PSO_STOCKOUT_WEIGHT):
-    """
-    If use_pso=True:
-        1. Run PSO to find optimal hyperparameters (cheap inner budget).
-        2. Run one final GA with those hyperparameters at the user's budget
-           (population_size and num_generations from the form are used as
-           the *ceiling* for the final GA run if they are larger than what
-           PSO found; otherwise PSO's values win).
-        3. Return GA result tuple + pso metadata dict.
- 
-    If use_pso=False:
-        Just run the GA with the user-supplied hyperparameters and return
-        dummy pso metadata.
-    """
-    pso_meta = {
-        'used':             use_pso,
-        'best_params':      None,
-        'best_score':       None,
-        'history':          [],
-        'pso_duration':     0.0,
-    }
- 
-    if use_pso:
-        pso_start = time.time()
- 
-        best_params, best_score, history = pso_optimize_hyperparameters(
-            product_data, daily_sales, daily_purchases,
-            n_particles    = pso_n_particles,
-            n_iters        = pso_n_iters,
-            stockout_weight= stockout_weight,
-        )
- 
-        pso_meta['best_params']  = best_params
-        pso_meta['best_score']   = best_score
-        pso_meta['history']      = history
-        pso_meta['pso_duration'] = time.time() - pso_start
- 
-        # Use PSO-found hyperparameters for the final run.
-        # Take the larger budget between user input and PSO recommendation
-        # so the user's manual settings are never made worse.
-        final_pop  = max(best_params['population_size'],  user_pop_size)
-        final_gen  = max(best_params['num_generations'],  user_num_gen)
-        final_cr   = best_params['crossover_rate']
-        final_mr   = best_params['mutation_rate']
-    else:
-        final_pop = user_pop_size
-        final_gen = user_num_gen
-        final_cr  = user_cr
-        final_mr  = user_mr
- 
-    ga_result = genetic_algorithm(
-        product_data, final_pop, final_gen, final_cr, final_mr,
-        daily_sales, daily_purchases, stockout_weight=stockout_weight
-    )
- 
-    return ga_result, pso_meta
- 
- 
-# ---------------------------------------------------------------------------
-# Plot helpers
-# ---------------------------------------------------------------------------
- 
-def _plot_pso_convergence(history):
-    """
-    Return a base64-encoded PNG of the PSO convergence curve.
-    history is a list of global-best scores per iteration.
-    """
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(history, linewidth=1.8, color="#097969", marker='o', markersize=3)
-    ax.set_xlabel('PSO Iteration', fontsize=13)
-    ax.set_ylabel('Best Composite Cost', fontsize=13)
-    ax.set_title('PSO Convergence — Hyperparameter Optimisation', fontsize=14)
-    ax.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f'{int(x):,}'))
-    ax.grid(True, linestyle='--', alpha=0.4)
-    plt.tight_layout()
- 
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png')
-    buf.seek(0)
-    encoded = base64.b64encode(buf.read()).decode('utf-8')
-    buf.close()
-    plt.close()
-    return encoded
- 
- 
 def _plot_inventory_level(inventory_level_list, upper_line, x_limit):
     fig, ax = plt.subplots(figsize=(18, 6))
     ax.plot(inventory_level_list, linewidth=1.5)
@@ -1813,7 +1553,7 @@ def periodic_view(request):
         mutation_rate   = _parse_post_float(request.POST, 'mutation_rate',   0.1)
  
         # PSO toggle & settings from form (with safe defaults)
-        use_pso         = request.POST.get('use_pso', 'false').lower() == 'true'
+        use_bo         = request.POST.get('use_bo', 'false').lower() == 'true'
         pso_n_particles = _parse_post_int  (request.POST, 'pso_particles',    PSO_N_PARTICLES)
         pso_n_iters     = _parse_post_int  (request.POST, 'pso_iters',        PSO_N_ITERS)
         stockout_weight = _parse_post_float(request.POST, 'stockout_weight',  PSO_STOCKOUT_WEIGHT)
@@ -1845,7 +1585,7 @@ def periodic_view(request):
             ga_result, pso_meta = run_with_pso(
                 product, daily_sales, daily_purchases,
                 pop_size, num_generations, crossover_rate, mutation_rate,
-                use_pso         = use_pso,
+                use_bo         = use_bo,
                 pso_n_particles = pso_n_particles,
                 pso_n_iters     = pso_n_iters,
                 stockout_weight = stockout_weight,
@@ -1894,7 +1634,7 @@ def periodic_view(request):
  
             # PSO convergence plot (only if PSO was used)
             pso_convergence_plot = (
-                _plot_pso_convergence(pso_meta['history']) if use_pso else None
+                _plot_pso_convergence(pso_meta['history']) if use_bo else None
             )
  
             data.append({
@@ -1913,7 +1653,7 @@ def periodic_view(request):
                 'pso_convergence_plot':    pso_convergence_plot,
                 # PSO metadata (available in template)
                 'pso_used':                pso_meta['used'],
-                'pso_duration':            round(pso_meta['pso_duration'], 2),
+                'bo_duration':            round(pso_meta['bo_duration'], 2),
                 'pso_best_score':          round(pso_meta['best_score'], 2) if pso_meta['best_score'] else None,
                 'pso_best_params':         pso_meta['best_params'],
                 'mc_result':               best_product,
@@ -1928,107 +1668,106 @@ def periodic_view(request):
  
  
 # ---------------------------------------------------------------------------
- 
 @login_required
 def inventory_collab_view(request):
     if request.method == 'POST':
+        # ---------------------------------------------------------------- #
+        # Parse POST parameters
+        # ---------------------------------------------------------------- #
         pop_size        = _parse_post_int  (request.POST, 'population_size', 30)
         num_generations = _parse_post_int  (request.POST, 'num_generations', 50)
         crossover_rate  = _parse_post_float(request.POST, 'crossover_rate',  0.8)
         mutation_rate   = _parse_post_float(request.POST, 'mutation_rate',   0.1)
  
-        use_pso         = request.POST.get('use_pso', 'false').lower() == 'true'
-        pso_n_particles = _parse_post_int  (request.POST, 'pso_particles',   PSO_N_PARTICLES)
-        pso_n_iters     = _parse_post_int  (request.POST, 'pso_iters',       PSO_N_ITERS)
-        stockout_weight = _parse_post_float(request.POST, 'stockout_weight', PSO_STOCKOUT_WEIGHT)
+        use_bo          = request.POST.get('use_bo', 'false').lower() == 'true'
+        bo_n_calls      = _parse_post_int  (request.POST, 'bo_n_calls',    BO_N_CALLS)
+        bo_n_initial    = _parse_post_int  (request.POST, 'bo_n_initial',  BO_N_INITIAL)
+        stockout_weight = _parse_post_float(request.POST, 'stockout_weight', BO_STOCKOUT_WEIGHT)
  
         outlets = Outlet.objects.all()
         items   = Item.objects.filter(type="JADI")
-
-        total_duration      = 0.0
-        total_start = time.time()
  
-        # ---------------------------------------------------------------- #
-        # Superadmin branch
-        # ---------------------------------------------------------------- #
+        total_start    = time.time()
+        total_duration = 0.0
+ 
+        # ================================================================ #
+        # SUPERADMIN BRANCH
+        # ================================================================ #
         if request.user.employee.role == 'superadmin':
             total_data_dict               = {}
             first_outlet_inventory_levels = {}
             outlet_inventory_levels       = {}
             data_all                      = []
  
-            # ----------------------------------------------------------------
-            # PSO PHASE — run ONCE per item, not once per item per outlet.
-            # We use outlet 3 (main/vendor) data as the representative signal
-            # for tuning. If outlet 3 has no data for an item, we fall back to
-            # the user-supplied hyperparameters unchanged.
-            # ----------------------------------------------------------------
-            global_pso_params = None
-            pso_duration      = 0.0
+            # -------------------------------------------------------------- #
+            # BO PHASE — jalankan SEKALI untuk semua item, pakai outlet 3
+            # sebagai data representatif. Hasilnya di-cache ke global_bo_params.
+            # -------------------------------------------------------------- #
+            global_bo_params = None
+            bo_duration      = 0.0
  
-            if use_pso:
-                PSO_OUTLET_ID = 3
-                products_data = []   # list of (product_dict, daily_sales, daily_purchases)
-
+            if use_bo:
+                BO_OUTLET_ID  = 3
+                products_data = []  # list of (product_dict, daily_sales, daily_purchases)
+ 
                 for item in items:
                     try:
-                        pso_sales_qs = (Sales.objects.filter(outlet_id=PSO_OUTLET_ID, item_id=item.id)
-                                        .values('created_at')
-                                        .annotate(total_sales=Sum('amount')))
-                        pso_purch_qs = (Purchase.objects.filter(outlet_id=PSO_OUTLET_ID, item_id=item.id)
-                                        .values('created_at')
-                                        .annotate(total_purchases=Sum('amount')))
-
-                        pso_sales_dict = {r['created_at'].date(): r['total_sales']     for r in pso_sales_qs}
-                        pso_purch_dict = {r['created_at'].date(): r['total_purchases'] for r in pso_purch_qs}
-
-                        if not pso_sales_dict:
+                        bo_sales_qs = (Sales.objects.filter(outlet_id=BO_OUTLET_ID, item_id=item.id)
+                                       .values('created_at')
+                                       .annotate(total_sales=Sum('amount')))
+                        bo_purch_qs = (Purchase.objects.filter(outlet_id=BO_OUTLET_ID, item_id=item.id)
+                                       .values('created_at')
+                                       .annotate(total_purchases=Sum('amount')))
+ 
+                        bo_sales_dict = {r['created_at'].date(): r['total_sales']     for r in bo_sales_qs}
+                        bo_purch_dict = {r['created_at'].date(): r['total_purchases'] for r in bo_purch_qs}
+ 
+                        if not bo_sales_dict:
                             continue
-
-                        pso_start_date  = min(pso_sales_dict.keys())
-                        pso_end_date    = pso_start_date + timedelta(days=59)
-                        pso_daily_sales = []
-                        pso_daily_purch = []
-                        cur = pso_start_date
-                        while cur <= pso_end_date:
-                            pso_daily_sales.append(pso_sales_dict.get(cur, 0))
-                            pso_daily_purch.append(pso_purch_dict.get(cur, 0))
+ 
+                        bo_start_date  = min(bo_sales_dict.keys())
+                        bo_end_date    = bo_start_date + timedelta(days=59)
+                        bo_daily_sales = []
+                        bo_daily_purch = []
+                        cur = bo_start_date
+                        while cur <= bo_end_date:
+                            bo_daily_sales.append(bo_sales_dict.get(cur, 0))
+                            bo_daily_purch.append(bo_purch_dict.get(cur, 0))
                             cur += timedelta(days=1)
-
-                        pso_total_sales = sum(pso_daily_sales)
-                        pso_std         = np.std(pso_daily_sales) if len(pso_daily_sales) > 1 else 1
-
-                        pso_product = {
+ 
+                        bo_total_sales = sum(bo_daily_sales)
+                        bo_std         = np.std(bo_daily_sales) if len(bo_daily_sales) > 1 else 1
+ 
+                        bo_product = {
                             'nama_barang':      item.name,
                             'biaya_pesan':      item.biaya_pesan,
                             'biaya_order':      20000,
-                            'permintaan_baku':  pso_total_sales if pso_total_sales > 0 else 1,
+                            'permintaan_baku':  bo_total_sales if bo_total_sales > 0 else 1,
                             'biaya_simpan':     5000,
                             'biaya_kekurangan': round((item.price * 7.5 / 100) + item.price),
                             'harga_produk':     item.price,
                             'lead_time':        item.lead_time / 100,
-                            'standar_deviasi':  pso_std,
+                            'standar_deviasi':  bo_std,
                         }
-
-                        products_data.append((pso_product, pso_daily_sales, pso_daily_purch))
-
+ 
+                        products_data.append((bo_product, bo_daily_sales, bo_daily_purch))
+ 
                     except Exception:
                         continue
-
-                if products_data:
-                    pso_start = time.time()
-                    global_pso_params, _, _ = pso_optimize_hyperparameters_global(
-                        products_data,
-                        num_generations = num_generations,
-                        n_particles     = pso_n_particles,
-                        n_iters         = pso_n_iters,
-                        stockout_weight = stockout_weight,
-                    )
-                    pso_duration = time.time() - pso_start
  
-            # ----------------------------------------------------------------
-            # GA PHASE — loop outlets × items, use cached PSO params
-            # ----------------------------------------------------------------
+                if products_data:
+                    bo_start = time.time()
+                    global_bo_params, _, _ = bo_optimize_hyperparameters_global(
+                        products_data,
+                        n_calls          = bo_n_calls,
+                        n_initial_points = bo_n_initial,
+                        stockout_weight  = stockout_weight,
+                    )
+                    bo_duration = time.time() - bo_start
+ 
+            # -------------------------------------------------------------- #
+            # GA PHASE — loop outlets × items, gunakan cached BO params
+            # -------------------------------------------------------------- #
             for outlet in outlets:
                 biaya_simpan = {3: 5000, 5: 1800, 6: 2000, 7: 1500}.get(outlet.id, 2000)
                 biaya_order  = 20000 if outlet.id == 3 else 10000
@@ -2086,33 +1825,33 @@ def inventory_collab_view(request):
                         'standar_deviasi':  standar_deviasi,
                     }
  
-                    # Resolve final GA hyperparameters from PSO cache
-                    if global_pso_params:
-                        final_pop = global_pso_params['population_size']
+                    # ---- Resolve hyperparameters dari cache BO ----------- #
+                    if global_bo_params:
+                        final_pop = global_bo_params['population_size']
                         final_gen = num_generations
-                        final_cr  = global_pso_params['crossover_rate']
-                        final_mr  = global_pso_params['mutation_rate']
-                        pso_meta  = {
-                            'used':         True,
-                            'best_params':  global_pso_params,
-                            'best_score':   None,
-                            'history':      [],
-                            'pso_duration': 0.0,
+                        final_cr  = global_bo_params['crossover_rate']
+                        final_mr  = global_bo_params['mutation_rate']
+                        bo_meta   = {
+                            'used':        True,
+                            'best_params': global_bo_params,
+                            'best_score':  None,
+                            'history':     [],
+                            'bo_duration': bo_duration,
                         }
                     else:
                         final_pop = pop_size
                         final_gen = num_generations
                         final_cr  = crossover_rate
                         final_mr  = mutation_rate
-                        pso_meta  = {
-                            'used':         False,
-                            'best_params':  None,
-                            'best_score':   None,
-                            'history':      [],
-                            'pso_duration': 0.0,
+                        bo_meta   = {
+                            'used':        False,
+                            'best_params': None,
+                            'best_score':  None,
+                            'history':     [],
+                            'bo_duration': 0.0,
                         }
  
-                    # Run GA with resolved hyperparameters (no PSO inside)
+                    # ---- Jalankan GA dengan hyperparameter yang sudah di-resolve ---- #
                     ga_result = genetic_algorithm(
                         product, final_pop, final_gen, final_cr, final_mr,
                         daily_sales, daily_purchases,
@@ -2131,7 +1870,7 @@ def inventory_collab_view(request):
                      first_inventory_level_list, first_restock_data,
                      first_calc_duration, best_calc_duration) = ga_result
  
-                    # ---- FIRST (analytical baseline) cost ------------ #
+                    # ---- FIRST (analytical baseline) cost --------------- #
                     temp_first_start   = time.time()
                     first_half_demand  = first_demand[:first_T]
                     first_total_demand = round(sum(first_half_demand))
@@ -2166,11 +1905,11 @@ def inventory_collab_view(request):
                         for day in range(min(first_T, len(first_inventory_level_list))):
                             first_single_inventory_level[day] += first_inventory_level_list[day]
  
-                    fp_freq         = max(first_purchases_freq, 1)
-                    first_c_order   = biaya_order * (first_T / (fp_freq * first_R))
-                    first_c_hold    = (biaya_simpan * ((first_S + first_s) / 2)
-                                       + (first_total_demand * first_R) / fp_freq)
-                    first_total_so  = round(sum(first_total_lost))
+                    fp_freq        = max(first_purchases_freq, 1)
+                    first_c_order  = biaya_order * (first_T / (fp_freq * first_R))
+                    first_c_hold   = (biaya_simpan * ((first_S + first_s) / 2)
+                                      + (first_total_demand * first_R) / fp_freq)
+                    first_total_so = round(sum(first_total_lost))
  
                     if first_std_daily > 0:
                         def integrand_first(x):
@@ -2179,11 +1918,11 @@ def inventory_collab_view(request):
                     else:
                         E_Rv_first = 0.0
  
-                    first_c_stockout  = product["biaya_kekurangan"] * E_Rv_first
-                    first_c_total     = first_c_order + first_c_hold + first_c_stockout
+                    first_c_stockout   = product["biaya_kekurangan"] * E_Rv_first
+                    first_c_total      = first_c_order + first_c_hold + first_c_stockout
                     first_calc_duration += time.time() - temp_first_start
  
-                    # ---- BEST (GA-optimised) cost -------------------- #
+                    # ---- BEST (GA-optimised) cost ----------------------- #
                     temp_best_start = time.time()
                     half_demand     = best_demand[:best_T]
                     tot_demand_best = round(sum(half_demand))
@@ -2273,12 +2012,12 @@ def inventory_collab_view(request):
                         'outlet_best_R':         best_R,
                         'outlet_best_s':         best_s,
                         'outlet_best_S':         best_S,
-                        'pso_used':              pso_meta['used'],
-                        'pso_best_params':       pso_meta['best_params'],
-                        'pso_duration':          round(pso_meta['pso_duration'], 2),
+                        'bo_used':               bo_meta['used'],
+                        'bo_best_params':        bo_meta['best_params'],
+                        'bo_duration':           round(bo_meta['bo_duration'], 2),
                     }
  
-                    # Aggregate into total_data_dict
+                    # ---- Aggregate ke total_data_dict ------------------- #
                     name = product["nama_barang"]
                     if name in total_data_dict:
                         td = total_data_dict[name]
@@ -2294,7 +2033,7 @@ def inventory_collab_view(request):
                             td[fkey] += item_data[fkey]
                         td['purchases_freq']      += 1 if outlet.id == 3 else item_data['purchases_freq']
                         td['first_stockout_mean'] += item_data['first_stockout_mean']
-                        td['stockout_mean']        += item_data['stockout_mean']
+                        td['stockout_mean']       += item_data['stockout_mean']
                         for lkey in ('first_restock_data', 'first_stock_history',
                                      'restock_data', 'stock_history'):
                             td[lkey] = [a + b for a, b in zip(td[lkey], item_data[lkey])]
@@ -2335,9 +2074,9 @@ def inventory_collab_view(request):
                         'outlet_best_R':         best_R,
                         'outlet_best_s':         best_s,
                         'outlet_best_S':         best_S,
-                        'pso_used':              pso_meta['used'],
-                        'pso_best_params':       pso_meta['best_params'],
-                        'pso_duration':          round(pso_meta['pso_duration'], 2),
+                        'bo_used':               bo_meta['used'],
+                        'bo_best_params':        bo_meta['best_params'],
+                        'bo_duration':           round(bo_meta['bo_duration'], 2),
                     })
  
                 data_all.append({
@@ -2361,19 +2100,19 @@ def inventory_collab_view(request):
                     'first_total_purchases_total':    sum(i['first_purchases_total'] for i in data),
                     'first_total_stockout_total':     sum(i['first_stockout_total']  for i in data),
                     'first_total_calc_duration':      sum(i['first_calc_duration']   for i in data),
-                    'total_order':                    sum(i['c_order']           for i in data),
-                    'total_hold':                     sum(i['c_hold']            for i in data),
-                    'total_stockout':                 sum(i['c_stockout']        for i in data),
-                    'total_all':                      sum(i['c_total']           for i in data),
-                    'total_purchases_freq':           sum(i['purchases_freq']    for i in data),
-                    'total_purchases_total':          sum(i['purchases_total']   for i in data),
-                    'total_stockout_total':           sum(i['stockout_total']    for i in data),
+                    'total_order':                    sum(i['c_order']            for i in data),
+                    'total_hold':                     sum(i['c_hold']             for i in data),
+                    'total_stockout':                 sum(i['c_stockout']         for i in data),
+                    'total_all':                      sum(i['c_total']            for i in data),
+                    'total_purchases_freq':           sum(i['purchases_freq']     for i in data),
+                    'total_purchases_total':          sum(i['purchases_total']    for i in data),
+                    'total_stockout_total':           sum(i['stockout_total']     for i in data),
                     'total_calc_duration':            sum(i['best_calc_duration'] for i in data),
                 })
  
             total_data = list(total_data_dict.values())
  
-            # ---- Plots for aggregated vendor-level totals ------------ #
+            # ---- Plot untuk aggregated vendor-level totals -------------- #
             for dt in total_data:
                 span_f = dt['first_timespan']
                 span_b = dt['timespan']
@@ -2410,7 +2149,7 @@ def inventory_collab_view(request):
                     dt['stockout_mean'], 'Total Stockout'
                 )
  
-            # ---- Adjust outlet 3 inventory & generate outlet plots -- #
+            # ---- Adjust outlet 3 & generate outlet plots --------------- #
             for dt in data_all:
                 if dt['outlet'].id == 3:
                     for inv_key, p_key, s_key in [
@@ -2430,8 +2169,6 @@ def inventory_collab_view(request):
                                 new_inv.append(cur)
                             dt[inv_key] = new_inv
  
-                # Use the last known first_T / best_T for span — safe because
-                # these are outlet-level loops and the variables are still in scope
                 for il_key, plot_key, span in [
                     ('first_combined_inventory_level', 'first_restock_plot',        first_T),
                     ('first_single_inventory_level',   'first_single_restock_plot', first_T),
@@ -2481,41 +2218,41 @@ def inventory_collab_view(request):
                     mid['inventory_level_plot'] = base64.b64encode(buf.read()).decode('utf-8')
                     buf.close()
                     plt.close()
-
+ 
             total_duration = time.time() - total_start
-
+ 
             context = {
                 'data_all':                      data_all,
                 'total_data':                    total_data,
                 'first_outlet_inventory_levels': first_outlet_inventory_levels,
                 'outlet_inventory_levels':       outlet_inventory_levels,
-                'first_total_order':             sum(i['first_c_order']          for i in total_data),
-                'first_total_hold':              sum(i['first_c_hold']           for i in total_data),
-                'first_total_stockout':          sum(i['first_c_stockout']       for i in total_data),
-                'first_total_all':               sum(i['first_c_total']          for i in total_data),
+                'first_total_order':             sum(i['first_c_order']         for i in total_data),
+                'first_total_hold':              sum(i['first_c_hold']          for i in total_data),
+                'first_total_stockout':          sum(i['first_c_stockout']      for i in total_data),
+                'first_total_all':               sum(i['first_c_total']         for i in total_data),
                 'first_total_calc_duration':     format_seconds(sum(i['first_calc_duration']  for i in total_data)),
-                'first_total_purchases_freq':    sum(i['first_purchases_freq']   for i in total_data),
-                'first_total_purchases_total':   sum(i['first_purchases_total']  for i in total_data),
-                'first_total_stockout_total':    sum(i['first_stockout_total']   for i in total_data),
+                'first_total_purchases_freq':    sum(i['first_purchases_freq']  for i in total_data),
+                'first_total_purchases_total':   sum(i['first_purchases_total'] for i in total_data),
+                'first_total_stockout_total':    sum(i['first_stockout_total']  for i in total_data),
                 'total_order':                   sum(i['c_order']       for i in total_data),
                 'total_hold':                    sum(i['c_hold']        for i in total_data),
                 'total_stockout':                sum(i['c_stockout']    for i in total_data),
                 'total_all':                     sum(i['c_total']       for i in total_data),
-                'total_calc_duration':           format_seconds(sum(i['best_calc_duration']   for i in total_data)),
+                'total_calc_duration':           format_seconds(sum(i['best_calc_duration'] for i in total_data)),
                 'total_purchases_freq':          sum(i['purchases_freq']  for i in total_data),
                 'total_purchases_total':         sum(i['purchases_total'] for i in total_data),
                 'total_stockout_total':          sum(i['stockout_total']  for i in total_data),
-                'pso_used':                      use_pso,
-                'pso_best_params':               global_pso_params,
-                'pso_duration':                  round(pso_duration, 2) if use_pso else 0,
+                'bo_used':                       use_bo,
+                'bo_best_params':                global_bo_params,
+                'bo_duration':                   round(bo_duration, 2) if use_bo else 0,
                 'total_duration':                format_seconds(total_duration) if total_duration else 0,
             }
  
             return render(request, 'inventory_collab/calculation_collab.html', context)
  
-        # ---------------------------------------------------------------- #
-        # Non-superadmin branch
-        # ---------------------------------------------------------------- #
+        # ================================================================ #
+        # NON-SUPERADMIN BRANCH
+        # ================================================================ #
         else:
             try:
                 outlet_id = request.user.employee.outlet_id
@@ -2568,32 +2305,36 @@ def inventory_collab_view(request):
                     daily_purchases.append(purchases_dict.get(cur, 0))
                     cur += timedelta(days=1)
  
-                # PSO runs once per product for non-superadmin too
-                if use_pso:
+                # ---- BO runs once per product untuk non-superadmin ------ #
+                if use_bo:
                     try:
-                        best_params, _, _ = pso_optimize_hyperparameters(
+                        best_params, _, _ = bo_optimize_hyperparameters(
                             product, daily_sales, daily_purchases,
-                            n_particles     = pso_n_particles,
-                            n_iters         = pso_n_iters,
-                            stockout_weight = stockout_weight,
+                            n_calls          = bo_n_calls,
+                            n_initial_points = bo_n_initial,
+                            stockout_weight  = stockout_weight,
                         )
                         final_pop = max(best_params['population_size'], pop_size)
-                        final_gen = max(best_params['num_generations'],  num_generations)
+                        final_gen = num_generations
                         final_cr  = best_params['crossover_rate']
                         final_mr  = best_params['mutation_rate']
-                        pso_meta  = {
+                        bo_meta   = {
                             'used':        True,
                             'best_params': best_params,
-                            'pso_duration': 0.0,
+                            'bo_duration': 0.0,
                         }
                     except Exception:
-                        final_pop, final_gen = pop_size, num_generations
-                        final_cr,  final_mr  = crossover_rate, mutation_rate
-                        pso_meta = {'used': False, 'best_params': None, 'pso_duration': 0.0}
+                        final_pop = pop_size
+                        final_gen = num_generations
+                        final_cr  = crossover_rate
+                        final_mr  = mutation_rate
+                        bo_meta   = {'used': False, 'best_params': None, 'bo_duration': 0.0}
                 else:
-                    final_pop, final_gen = pop_size, num_generations
-                    final_cr,  final_mr  = crossover_rate, mutation_rate
-                    pso_meta = {'used': False, 'best_params': None, 'pso_duration': 0.0}
+                    final_pop = pop_size
+                    final_gen = num_generations
+                    final_cr  = crossover_rate
+                    final_mr  = mutation_rate
+                    bo_meta   = {'used': False, 'best_params': None, 'bo_duration': 0.0}
  
                 ga_result = genetic_algorithm(
                     product, final_pop, final_gen, final_cr, final_mr,
@@ -2677,9 +2418,9 @@ def inventory_collab_view(request):
                     'purchases_total':      purchases_total,
                     'stockout_total':       total_so,
                     'inventory_level_plot': inventory_level_plot,
-                    'pso_used':             pso_meta['used'],
-                    'pso_best_params':      pso_meta['best_params'],
-                    'pso_duration':         round(pso_meta['pso_duration'], 2),
+                    'bo_used':              bo_meta['used'],
+                    'bo_best_params':       bo_meta['best_params'],
+                    'bo_duration':          round(bo_meta['bo_duration'], 2),
                 })
  
             return render(request, 'inventory_collab/calculation.html', {'data': data})
@@ -3494,6 +3235,223 @@ def inventory_collab_input_view(request):
 
     return render(request, 'inventory_collab/index-input.html', context)
 
+def _bo_evaluate(params, product_data, daily_sales, daily_purchases, stockout_weight=BO_STOCKOUT_WEIGHT):
+    """
+    Jalankan GA dengan hyperparameter *params* dan kembalikan composite cost.
+    pop_size dan num_generations di-cap ke inner budget agar cepat.
+    """
+    pop_size, crossover_rate, mutation_rate = params
+
+    pop_size        = max(2, min(int(pop_size), BO_INNER_POP))
+    num_generations = BO_INNER_GEN
+
+    try:
+        result         = genetic_algorithm(
+            product_data, pop_size, num_generations,
+            float(crossover_rate), float(mutation_rate),
+            daily_sales, daily_purchases,
+            stockout_weight=stockout_weight,
+        )
+        best_total_cost = result[16]
+        tot_lost        = result[9]
+        total_stockout  = round(sum(tot_lost))
+        return float(best_total_cost + stockout_weight * total_stockout)
+    except Exception:
+        return float('inf')
+
+# ---------------------------------------------------------------------------
+# Fungsi utama BO — pengganti pso_optimize_hyperparameters()
+# ---------------------------------------------------------------------------
+def bo_optimize_hyperparameters(product_data, daily_sales, daily_purchases, n_calls=BO_N_CALLS, n_initial_points=BO_N_INITIAL, stockout_weight=BO_STOCKOUT_WEIGHT, random_state=42):
+    """
+    Jalankan Bayesian Optimization untuk mencari hyperparameter GA terbaik.
+
+    Parameters
+    ----------
+    product_data      : dict  — data produk (sama seperti yang dikirim ke GA)
+    daily_sales       : list  — penjualan harian
+    daily_purchases   : list  — pembelian harian
+    n_calls           : int   — total jumlah evaluasi BO
+    n_initial_points  : int   — titik acak awal (eksplorasi sebelum GP aktif)
+    stockout_weight   : float — bobot penalti stockout
+    random_state      : int   — seed untuk reproduksibilitas
+
+    Returns
+    -------
+    best_params : dict
+        Keys: population_size, crossover_rate, mutation_rate
+    best_score  : float
+        Composite cost terbaik yang ditemukan BO
+    history     : list of float
+        Skor terbaik (running minimum) di setiap iterasi — untuk plot konvergensi
+    """
+
+    # Bungkus evaluator agar menerima list positional args dari gp_minimize
+    def objective(params):
+        return _bo_evaluate(
+            params, product_data, daily_sales, daily_purchases, stockout_weight
+        )
+
+    result = gp_minimize(
+        func             = objective,
+        dimensions       = BO_SPACE,
+        n_calls          = n_calls,
+        n_initial_points = n_initial_points,
+        acq_func         = "EI",          # Expected Improvement
+        random_state     = random_state,
+        noise            = 1e-10,
+    )
+
+    # Running minimum untuk plot konvergensi
+    history = []
+    running_min = float('inf')
+    for val in result.func_vals:
+        running_min = min(running_min, val)
+        history.append(running_min)
+
+    best_params = {
+        'population_size': int(result.x[0]),
+        'crossover_rate':  round(float(result.x[1]), 4),
+        'mutation_rate':   round(float(result.x[2]), 4),
+    }
+
+    return best_params, float(result.fun), history
+
+# ---------------------------------------------------------------------------
+# Versi global (multi-produk) — pengganti pso_optimize_hyperparameters_global()
+# ---------------------------------------------------------------------------
+def bo_optimize_hyperparameters_global(products_data,
+                                        num_generations=50,
+                                        n_calls=BO_N_CALLS,
+                                        n_initial_points=BO_N_INITIAL,
+                                        stockout_weight=BO_STOCKOUT_WEIGHT,
+                                        random_state=42):
+    """
+    Cari hyperparameter GA terbaik yang berlaku untuk SEMUA produk sekaligus.
+    Fitness = rata-rata composite cost di seluruh produk.
+
+    products_data : list of (product_dict, daily_sales, daily_purchases)
+    """
+
+    def objective(params):
+        scores = []
+        for product_data, daily_sales, daily_purchases in products_data:
+            s = _bo_evaluate(params, product_data, daily_sales, daily_purchases, stockout_weight)
+            if s < float('inf'):
+                scores.append(s)
+        # Kembalikan rata-rata; jika semua gagal, kembalikan penalti besar
+        return float(np.mean(scores)) if scores else float('inf')
+
+    result = gp_minimize(
+        func             = objective,
+        dimensions       = BO_SPACE,
+        n_calls          = n_calls,
+        n_initial_points = n_initial_points,
+        acq_func         = "EI",
+        random_state     = random_state,
+        noise            = 1e-10,
+    )
+
+    history = []
+    running_min = float('inf')
+    for val in result.func_vals:
+        running_min = min(running_min, val)
+        history.append(running_min)
+
+    best_params = {
+        'population_size': int(result.x[0]),
+        'crossover_rate':  round(float(result.x[1]), 4),
+        'mutation_rate':   round(float(result.x[2]), 4),
+    }
+
+    return best_params, float(result.fun), history
+
+# ---------------------------------------------------------------------------
+# Convenience wrapper — pengganti run_with_pso()
+# ---------------------------------------------------------------------------
+def run_with_bo(product_data, daily_sales, daily_purchases,
+                user_pop_size, user_num_gen, user_cr, user_mr,
+                use_bo=True,
+                bo_n_calls=BO_N_CALLS,
+                bo_n_initial=BO_N_INITIAL,
+                stockout_weight=BO_STOCKOUT_WEIGHT):
+    """
+    Drop-in replacement untuk run_with_pso().
+
+    Jika use_bo=True:
+        1. Jalankan BO untuk cari hyperparameter optimal (budget ringan).
+        2. Jalankan final GA dengan hyperparameter terbaik + budget user.
+        3. Return GA result tuple + bo_meta dict.
+
+    Jika use_bo=False:
+        Langsung jalankan GA dengan hyperparameter dari user.
+    """
+    bo_meta = {
+        'used':         use_bo,
+        'best_params':  None,
+        'best_score':   None,
+        'history':      [],
+        'bo_duration':  0.0,
+    }
+
+    if use_bo:
+        bo_start = time.time()
+
+        best_params, best_score, history = bo_optimize_hyperparameters(
+            product_data, daily_sales, daily_purchases,
+            n_calls         = bo_n_calls,
+            n_initial_points= bo_n_initial,
+            stockout_weight = stockout_weight,
+        )
+
+        bo_meta['best_params'] = best_params
+        bo_meta['best_score']  = best_score
+        bo_meta['history']     = history
+        bo_meta['bo_duration'] = time.time() - bo_start
+
+        # Ambil nilai terbesar antara saran BO dan input user
+        final_pop = max(best_params['population_size'], user_pop_size)
+        final_gen = user_num_gen        # BO tidak mengoptimasi num_generations
+        final_cr  = best_params['crossover_rate']
+        final_mr  = best_params['mutation_rate']
+    else:
+        final_pop = user_pop_size
+        final_gen = user_num_gen
+        final_cr  = user_cr
+        final_mr  = user_mr
+
+    ga_result = genetic_algorithm(
+        product_data, final_pop, final_gen, final_cr, final_mr,
+        daily_sales, daily_purchases,
+        stockout_weight=stockout_weight,
+    )
+
+    return ga_result, bo_meta
+# ---------------------------------------------------------------------------
+# Plot helper — pengganti _plot_pso_convergence()
+# ---------------------------------------------------------------------------
+def _plot_bo_convergence(history):
+    """
+    Return base64-encoded PNG dari kurva konvergensi BO.
+    history adalah list running-minimum score per iterasi.
+    """
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(history, linewidth=1.8, color="#1a6faf", marker='o', markersize=3)
+    ax.set_xlabel('BO Iteration', fontsize=13)
+    ax.set_ylabel('Best Composite Cost', fontsize=13)
+    ax.set_title('Bayesian Optimization Convergence — Hyperparameter Tuning', fontsize=14)
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f'{int(x):,}'))
+    ax.grid(True, linestyle='--', alpha=0.4)
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png')
+    buf.seek(0)
+    encoded = base64.b64encode(buf.read()).decode('utf-8')
+    buf.close()
+    plt.close()
+    return encoded
+
 def _parse_post_float(post, key, default):
     """Read a float from POST data, falling back to default if blank or invalid."""
     val = post.get(key, '').strip()
@@ -3512,100 +3470,3 @@ def _parse_post_int(post, key, default):
 
 def format_seconds(seconds):
     return str(timedelta(seconds=round(seconds)))
-
-def _evaluate_particle_global(position, products_data, num_generations, stockout_weight=PSO_STOCKOUT_WEIGHT):
-    """
-    Evaluate a PSO particle against ALL products and return the average
-    composite fitness. This ensures PSO finds hyperparameters that work
-    well across the entire catalogue, not just one item.
-    """
-    pop_size, crossover_rate, mutation_rate = _decode_particle(position)
-    pop_size = min(pop_size, PSO_INNER_POP)
-    inner_gen = min(num_generations, PSO_INNER_GEN)
-
-    scores = []
-    for product_data, daily_sales, daily_purchases in products_data:
-        try:
-            result = genetic_algorithm(
-                product_data, pop_size, inner_gen,
-                crossover_rate, mutation_rate,
-                daily_sales, daily_purchases,
-            )
-            best_total_cost = result[16]
-            total_stockout = round(sum(result[9]))
-            scores.append(best_total_cost + stockout_weight * total_stockout)
-        except Exception:
-            scores.append(float('inf'))
-
-    return float(np.mean(scores)) if scores else float('inf')
-
-def pso_optimize_hyperparameters_global(products_data,
-    num_generations,
-    n_particles=PSO_N_PARTICLES,
-    n_iters=PSO_N_ITERS,
-    w=PSO_W, c1=PSO_C1, c2=PSO_C2,
-    stockout_weight=PSO_STOCKOUT_WEIGHT):
-    """
-    Run PSO once across all products to find a single unified hyperparameter
-    set. Each particle is scored as the average fitness across all items.
-
-    Returns best_params dict, best_score, history.
-    """
-    lo  = [PSO_BOUNDS['population_size'][0], PSO_BOUNDS['crossover_rate'][0],
-        PSO_BOUNDS['mutation_rate'][0]]
-    hi  = [PSO_BOUNDS['population_size'][1], PSO_BOUNDS['crossover_rate'][1],
-        PSO_BOUNDS['mutation_rate'][1]]
-    dim = 3
-
-    positions  = [[random.uniform(lo[d], hi[d]) for d in range(dim)]
-        for _ in range(n_particles)]
-    velocities = [[random.uniform(-(hi[d] - lo[d]) * 0.1, (hi[d] - lo[d]) * 0.1)
-        for d in range(dim)] for _ in range(n_particles)]
-
-    personal_best_pos   = [p[:] for p in positions]
-    personal_best_score = [
-        _evaluate_particle_global(p, products_data, num_generations, stockout_weight)
-        for p in positions
-    ]
-
-    global_best_idx   = int(np.argmin(personal_best_score))
-    global_best_pos   = personal_best_pos[global_best_idx][:]
-    global_best_score = personal_best_score[global_best_idx]
-    history           = [global_best_score]
-
-    for _ in range(n_iters):
-        for i in range(n_particles):
-            r1 = [random.random() for _ in range(dim)]
-            r2 = [random.random() for _ in range(dim)]
-
-            velocities[i] = [
-                w * velocities[i][d]
-                + c1 * r1[d] * (personal_best_pos[i][d] - positions[i][d])
-                + c2 * r2[d] * (global_best_pos[d]       - positions[i][d])
-                for d in range(dim)
-            ]
-            positions[i] = _clip_particle([
-                positions[i][d] + velocities[i][d] for d in range(dim)
-            ])
-
-            score = _evaluate_particle_global(positions[i], products_data, num_generations, stockout_weight)
-
-            if score < personal_best_score[i]:
-                personal_best_score[i] = score
-                personal_best_pos[i]   = positions[i][:]
-
-            if score < global_best_score:
-                global_best_score = score
-                global_best_pos   = positions[i][:]
-
-        history.append(global_best_score)
-
-    pop_size, cr, mr = _decode_particle(global_best_pos)
-    best_params = {
-        'population_size': pop_size,
-        'num_generations': num_generations,
-        'crossover_rate':  round(cr, 4),
-        'mutation_rate':   round(mr, 4),
-    }
-
-    return best_params, global_best_score, history
