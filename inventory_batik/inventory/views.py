@@ -37,12 +37,17 @@ from scipy.stats import norm
 from statistics import stdev
 import io, base64
 import seaborn as sns
-from matplotlib import pyplot as plt
+# from matplotlib import pyplot as plt
 import random
 from scipy.integrate import quad
 from matplotlib.ticker import FuncFormatter
 from datetime import datetime
 import time
+
+import matplotlib
+matplotlib.use('Agg')
+
+from matplotlib import pyplot as plt
 
 from django.shortcuts import redirect
 
@@ -1111,9 +1116,15 @@ def find_rss(to, product):
 #     total_stockout = round(sum(tot_lost))
 
 #     if std_dev_daily > 0:
-#         def integrand(x):
-#             return (x - total_daily_demand) * norm.pdf(x, mean_daily_demand, std_dev_daily)
-#         E_Rv, _ = quad(integrand, total_daily_demand, np.inf)
+#         z = (total_daily_demand - mean_daily_demand) / std_dev_daily
+
+#         phi = norm.pdf(z)
+#         Phi = norm.cdf(z)
+
+#         E_Rv = std_dev_daily * phi + (mean_daily_demand - total_daily_demand) * (1 - Phi)
+
+#         # numerical safety
+#         E_Rv = max(E_Rv, 0.0)
 #     else:
 #         E_Rv = 0.0
 
@@ -1146,26 +1157,69 @@ def find_rss(to, product):
 
 #     return composite, total_stockout
 
-def min_fitness(product, demand, init_R, init_s, init_S, init_T, purchases_freq, tot_lost, stockout_weight=1.0):
+# def min_fitness(product, demand, init_R, init_s, init_S, init_T, purchases_freq, tot_lost, stockout_weight=0.5):
     
+#     init_R = max(int(round(init_R)), 1)
+#     init_s = max(int(round(init_s)), 1)
+#     init_S = max(int(round(init_S)), init_s + 1)
+#     init_T = max(int(round(init_T)), 1)
+
+#     # Re-simulate with current genes — this is the key fix
+#     (_, _, _, _, fresh_tot_lost, _, fresh_pf, _, _) = calculate_inventory_levels_rss(demand[:init_T], init_R, init_s, init_S)
+
+#     total_stockout = round(sum(fresh_tot_lost))
+#     biaya_order    = product.get("biaya_order", product.get("biaya_pesan", 0))
+#     tot_demand     = round(sum(demand[:init_T]))
+
+#     c_order    = biaya_order * (init_T / (max(fresh_pf, 1) * init_R))
+#     c_hold     = product["biaya_simpan"] * round((init_S + init_s) / 2)
+#     c_stockout = product["biaya_kekurangan"] * total_stockout
+#     c_total    = c_order + c_hold + c_stockout
+#     # composite  = c_total + stockout_weight * total_stockout
+#     composite  = c_total
+
+#     return composite, total_stockout
+
+def min_fitness(product, demand, init_R, init_s, init_S, init_T, purchases_freq, tot_lost, stockout_weight=1.0):
     init_R = max(int(round(init_R)), 1)
     init_s = max(int(round(init_s)), 1)
     init_S = max(int(round(init_S)), init_s + 1)
     init_T = max(int(round(init_T)), 1)
 
-    # Re-simulate with current genes — this is the key fix
-    (_, _, _, _, fresh_tot_lost, _, fresh_pf, _, _) = calculate_inventory_levels_rss(demand[:init_T], init_R, init_s, init_S)
+    (_, _, _, _, fresh_tot_lost, _, fresh_pf, _, _) = (
+        calculate_inventory_levels_rss(demand[:init_T], init_R, init_s, init_S)
+    )
 
     total_stockout = round(sum(fresh_tot_lost))
     biaya_order    = product.get("biaya_order", product.get("biaya_pesan", 0))
-    tot_demand     = round(sum(demand[:init_T]))
+    biaya_kurang   = product["biaya_kekurangan"]
 
-    c_order    = biaya_order * (init_T / (max(fresh_pf, 1) * init_R))
-    c_hold     = product["biaya_simpan"] * round((init_S + init_s) / 2)
-    c_stockout = product["biaya_kekurangan"] * total_stockout
-    c_total    = c_order + c_hold + c_stockout
-    composite  = c_total + stockout_weight * total_stockout
-    # composite  = c_total
+    half_demand     = demand[:init_T]
+    mean_daily      = np.mean(half_demand) if half_demand else 0
+    std_daily       = np.std(half_demand, ddof=1) / np.sqrt(init_T) if len(half_demand) > 1 else 1e-9
+    total_daily_dmd = round(sum(half_demand) / init_T) if init_T > 0 else 0
+
+    c_order = biaya_order * (init_T / (max(fresh_pf, 1) * init_R))
+    c_hold  = product["biaya_simpan"] * round((init_S + init_s) / 2)
+
+    # ── analytical expected shortage (smooth gradient) ──────────────────
+    if std_daily > 0:
+        z    = (total_daily_dmd - mean_daily) / std_daily
+        E_Rv = std_daily * norm.pdf(z) + (mean_daily - total_daily_dmd) * (1 - norm.cdf(z))
+        E_Rv = max(E_Rv, 0.0)
+    else:
+        E_Rv = 0.0
+
+    c_stockout_analytical = biaya_kurang * E_Rv
+
+    # ── actual simulated stockout cost (hard penalty for real shortages) ─
+    c_stockout_actual = biaya_kurang * total_stockout * 0.01  # scaled down so units are comparable
+
+    # ── blended: analytical drives smooth gradient, actual prevents collapse
+    c_stockout = c_stockout_analytical + stockout_weight * c_stockout_actual
+
+    c_total   = c_order + c_hold + c_stockout
+    composite = c_total
 
     return composite, total_stockout
 
@@ -1293,38 +1347,49 @@ def calculate_inventory_levels_rss(demand_result, R, s, S):
 # ---------------------------------------------------------------------------
 # Genetic-algorithm operators
 # ---------------------------------------------------------------------------
-def log_scaled_mutation(individual, mutation_rate, sigma=0.1, lower_bound=1, upper_bound=10000):
-    """
-    Log-scaled mutation on numeric genes.
-    Index 5 (T) is skipped — preserved as an integer choice.
-    After mutation, ensures S > s.
-    """
-    mutated = list(individual)
-    # prod = mutated[0]
+def log_scaled_mutation(individual, mutation_rate, sigma=0.1, lower_bound=1, upper_bound=10000, max_gap=10000):
 
-    # safety_floor = max(1, round(1.65 * prod.get("standar_deviasi", 1) * math.sqrt(prod.get("lead_time", 1))))
+    mutated = list(individual)
 
     for i, gene in enumerate(mutated):
         if i == 5:
             continue
         if not isinstance(gene, (int, float)):
             continue
+
         if random.random() < mutation_rate:
-            r            = random.gauss(0, sigma)
+            r = random.gauss(0, sigma)
             mutated_gene = gene * (10 ** r)
-            mutated[i]   = max(min(mutated_gene, upper_bound), lower_bound)
 
-    _, _, _, temp_s, temp_S, _, _, _ = mutated
-    # mutated[3] = max(temp_s, safety_floor)
-    mutated[4] = max(temp_s + 1, temp_S)
+            mutated[i] = max(min(mutated_gene, upper_bound), lower_bound)
 
-    return tuple(mutated)
+    return fix_S_s(tuple(mutated), max_gap=max_gap)
 
-def fix_S_s(individual):
-    """After crossover, guarantee S > s and T is an integer."""
+def fix_S_s(individual, max_gap=10000):
     prod, demand, R, s, S, T, purchases_freq, tot_lost = individual
-    S = max(s + 1, S)
+
+    mean_d = np.mean(demand) if len(demand) > 0 else 1
+    std_d  = np.std(demand)  if len(demand) > 1 else 0
+    lead   = max(prod.get("lead_time", 1), 0.1)
+
+    # ── minimum reorder point = demand during lead time + safety stock ──
+    z_safety = 1.65                               # 95 % service level
+    safety   = z_safety * std_d * np.sqrt(lead)
+    min_s    = int(mean_d * lead + safety)        # replaces old max_s cap
+    min_s    = max(min_s, 2)
+
+    # ── max S = enough to cover one full review cycle + lead time ───────
+    max_S = int(mean_d * (R + lead) * 2 + safety * 2) + 1
+    max_S = max(max_S, min_s + 2)
+
+    s = max(s, min_s)                             # s must be AT LEAST min_s
+    S = max(s + 1, int(round(S)))
+    S = min(S, max_S)
     T = int(round(T))
+
+    if S - s > max_gap:
+        S = s + max_gap
+
     return (prod, demand, R, s, S, T, purchases_freq, tot_lost)
 
 # ---------------------------------------------------------------------------
@@ -1362,14 +1427,32 @@ def genetic_algorithm(product_data, population_size, num_generations, crossover_
     # ------------------------------------------------------------------ #
     population      = []
     variation       = 15
-    stock_variation = 5000
+    # stock_variation = 1500
+    stock_variation = min(max(50, first_s // 4), 200)
     s_floor = max(2, first_s)
 
     for _ in range(population_size):
         rand_R = random.randint(max(1, first_R - variation), first_R + variation)
         # rand_s = random.randint(max(2, first_s - stock_variation), first_s + stock_variation)
-        rand_s = random.randint(s_floor, s_floor + stock_variation)
-        rand_S = random.randint(max(rand_s + 1, first_S), first_S + stock_variation)
+
+        # Use safety-stock-aware floor, not just first_s // 2
+        std_d    = np.std(daily_sales) if len(daily_sales) > 1 else 0
+        lead     = max(product_data.get("lead_time", 1), 0.1)
+        ss_floor = int(np.mean(daily_sales) * lead + 1.65 * std_d * np.sqrt(lead))
+        ss_floor = max(ss_floor, 2)
+
+        rand_s = random.randint(ss_floor, max(ss_floor + 1, first_s + stock_variation))
+
+        # q_min  = max(10, first_S - first_s - stock_variation // 2)
+        # q_max  = first_S - first_s + stock_variation
+        # rand_Q = random.randint(q_min, max(q_min + 1, q_max))
+        # rand_S = rand_s + rand_Q
+
+        q_min  = max(50, first_S - first_s)
+        q_max  = max(100, first_S - first_s + stock_variation)
+        rand_Q = random.randint(q_min, q_max)
+        rand_S = rand_s + rand_Q
+
         rand_T = int(random.choice([30, 45, 60]))
 
         (_, _, _, _, pop_tot_lost, _, pop_purchases_freq, _, _) = calculate_inventory_levels_rss(daily_sales[:rand_T], rand_R, rand_s, rand_S)
@@ -2168,10 +2251,23 @@ def inventory_collab_view(request):
                     first_c_hold    = biaya_simpan * round((first_S + first_s) / 2)
                     first_total_so  = round(sum(first_total_lost))
 
+                    # if first_std_daily > 0:
+                    #     def integrand_first(x):
+                    #         return (x - first_total_daily_dmd) * norm.pdf(x, first_mean_daily, first_std_daily)
+                    #     E_Rv_first, _ = quad(integrand_first, first_total_daily_dmd, np.inf)
+                    # else:
+                    #     E_Rv_first = 0.0
+
                     if first_std_daily > 0:
-                        def integrand_first(x):
-                            return (x - first_total_daily_dmd) * norm.pdf(x, first_mean_daily, first_std_daily)
-                        E_Rv_first, _ = quad(integrand_first, first_total_daily_dmd, np.inf)
+                        z = (first_total_daily_dmd - first_mean_daily) / first_std_daily
+
+                        phi = norm.pdf(z)
+                        Phi = norm.cdf(z)
+
+                        E_Rv_first = first_std_daily * phi + (first_mean_daily - first_total_daily_dmd) * (1 - Phi)
+
+                        # numerical safety
+                        E_Rv_first = max(E_Rv_first, 0.0)
                     else:
                         E_Rv_first = 0.0
 
@@ -2227,10 +2323,23 @@ def inventory_collab_view(request):
                     c_hold     = biaya_simpan * round((best_S + best_s) / 2)
                     total_so = round(sum(total_lost))
 
+                    # if std_daily > 0:
+                    #     def integrand_best(x):
+                    #         return (x - total_daily_dmd) * norm.pdf(x, mean_daily, std_daily)
+                    #     E_Rv_best, _ = quad(integrand_best, total_daily_dmd, np.inf)
+                    # else:
+                    #     E_Rv_best = 0.0
+
                     if std_daily > 0:
-                        def integrand_best(x):
-                            return (x - total_daily_dmd) * norm.pdf(x, mean_daily, std_daily)
-                        E_Rv_best, _ = quad(integrand_best, total_daily_dmd, np.inf)
+                        z = (total_daily_dmd - mean_daily) / std_daily
+
+                        phi = norm.pdf(z)
+                        Phi = norm.cdf(z)
+
+                        E_Rv_best = std_daily * phi + (mean_daily - total_daily_dmd) * (1 - Phi)
+
+                        # numerical safety
+                        E_Rv_best = max(E_Rv_best, 0.0)
                     else:
                         E_Rv_best = 0.0
 
