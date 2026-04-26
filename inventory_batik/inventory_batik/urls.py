@@ -91,6 +91,9 @@ urlpatterns = [
     # Export
     path('export/', export_view, name='export.index'),
 
+    # Kuesioner
+    path('kuesioner/', kuesioner_view, name='kuesioner.index'),
+
     # Periodic Review
     path('periodic/', periodic_view, name='periodic.index'),
 

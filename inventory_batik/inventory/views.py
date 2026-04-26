@@ -977,6 +977,27 @@ def export_view(request):
 
     return render(request, 'export/index.html', context)
 
+def kuesioner_view(request):
+    if request.method == 'POST':
+        form = KuesionerForm(request.POST)
+        if form.is_valid():
+            # Access cleaned data
+            nama = form.cleaned_data['nama']
+            usia = form.cleaned_data['usia']
+            pendidikan_terakhir = form.cleaned_data['pendidikan_terakhir']
+
+            # TODO: Save to database or process as needed
+            # Example: MyModel.objects.create(nama=nama, usia=usia, pendidikan_terakhir=pendidikan_terakhir)
+
+            return redirect('success')  # Redirect to a success page
+    else:
+        form = KuesionerForm()
+
+    return render(request, 'kuesioner/index.html', {'form': form})
+
+def success_view(request):
+    return render(request, 'success.html')
+
 def daily_demand(mean, sd, zero_threshold_factor=1.0):
     """Return a stochastic daily demand value (may be 0)."""
     random_num = np.random.uniform(0, 1)

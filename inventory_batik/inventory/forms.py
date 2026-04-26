@@ -4,6 +4,25 @@ from django.utils.translation import gettext_lazy as _
 
 from .models import *
 
+USIA_CHOICES = [
+    ('< 18', '< 18'),
+    ('19 - 24', '19 - 24'),
+    ('25 - 34', '25 - 34'),
+    ('35 - 44', '35 - 44'),
+    ('45 - 54', '45 - 54'),
+    ('55 - 64', '55 - 64'),
+    ('> 65', '> 65'),
+]
+
+PENDIDIKAN_CHOICES = [
+    ('SD', 'SD'),
+    ('SMP', 'SMP'),
+    ('SMA', 'SMA'),
+    ('S1', 'S1'),
+    ('S2', 'S2'),
+    ('S3', 'S3'),
+]
+
 class OutletForm(ModelForm):
     class Meta:
         # merelasikan form dengan model
@@ -426,3 +445,56 @@ class EmployeeForm(ModelForm):
             employee.save()
         
         return employee
+
+class KuesionerForm(forms.Form):
+    nama = forms.CharField(
+        label='Nama',
+        max_length=100,
+        widget=forms.TextInput(attrs={
+            'class': 'form-input',
+            'placeholder': '',
+        })
+    )
+
+    usia = forms.ChoiceField(
+        label='Usia',
+        choices=USIA_CHOICES,
+        widget=forms.RadioSelect(attrs={
+            'class': 'form-radio',
+        })
+    )
+
+    pendidikan_terakhir = forms.ChoiceField(
+        label='Pendidikan Terakhir',
+        choices=PENDIDIKAN_CHOICES,
+        widget=forms.RadioSelect(attrs={
+            'class': 'form-radio',
+        })
+    )
+
+    address = forms.CharField(
+        label='Alamat',
+        max_length=100,
+        widget=forms.TextInput(attrs={
+            'class': 'form-input',
+            'placeholder': '',
+        })
+    )
+
+    umkm = forms.CharField(
+        label='Asal UMKM',
+        max_length=100,
+        widget=forms.TextInput(attrs={
+            'class': 'form-input',
+            'placeholder': '',
+        })
+    )
+
+    phone_number = forms.CharField(
+        label='Nomor HP',
+        max_length=100,
+        widget=forms.TextInput(attrs={
+            'class': 'form-input',
+            'placeholder': '',
+        })
+    )
