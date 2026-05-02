@@ -1,15 +1,13 @@
 from __future__ import division
 
-from django.shortcuts import render
 from django.http import Http404
 from django.contrib import messages
-from django.shortcuts import redirect
 from django.http import HttpResponse, JsonResponse
 from django.core import serializers
 import json
 from django.utils import timezone
 from datetime import timedelta
-from django.shortcuts import render, redirect
+from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
@@ -21,6 +19,7 @@ from django.core.serializers import serialize
 from django.urls import reverse
 from django.db.models import F, Sum
 from django.db.models.functions import Coalesce
+from django.db import transaction
 
 from .models import *
 
@@ -50,6 +49,27 @@ matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
 from django.shortcuts import redirect
+
+# Map each field prefix to its variabel code
+VARIABEL_MAP = {
+    'PEOU': 'PEOU',
+    'PU':   'PU',
+    'CONF': 'CONF',
+    'ATT':  'ATT',
+    'TRST': 'TRST',
+    'SAT':  'SAT',
+    'CI':   'CI',
+}
+
+JAWABAN_CODES = [
+    'PEOU_1', 'PEOU_2', 'PEOU_3', 'PEOU_4', 'PEOU_5',
+    'PU_1',   'PU_2',   'PU_3',   'PU_4',
+    'CONF_1', 'CONF_2', 'CONF_3',
+    'ATT_1',  'ATT_2',  'ATT_3',
+    'TRST_1', 'TRST_2', 'TRST_3',
+    'SAT_1',  'SAT_2',  'SAT_3',
+    'CI_1',   'CI_2',   'CI_3',
+]
 
 def anonymous_required(view_function):
     def wrapper_function(request, *args, **kwargs):
@@ -982,26 +1002,134 @@ def export_view(request):
 
     return render(request, 'export/index.html', context)
 
-def kuesioner_view(request):
+def questionnaire_view(request):
+    respondents = Responden.objects.all().order_by('-submitted_at')
+
+    # return HttpResponse(respondents)
+
+    context = {
+        'respondents': respondents,
+    }
+
+    return render(request, 'questionnaire/index.html', context)
+
+def questionnaire_isi_view(request):
     if request.method == 'POST':
-        form = KuesionerForm(request.POST)
+        form = RespondenForm(request.POST)
+
         if form.is_valid():
-            # Access cleaned data
-            nama = form.cleaned_data['nama']
-            usia = form.cleaned_data['usia']
-            pendidikan_terakhir = form.cleaned_data['pendidikan_terakhir']
+            data = form.cleaned_data
 
-            # TODO: Save to database or process as needed
-            # Example: MyModel.objects.create(nama=nama, usia=usia, pendidikan_terakhir=pendidikan_terakhir)
+            # Use transaction so everything saves together or not at all
+            with transaction.atomic():
 
-            return redirect('success')  # Redirect to a success page
-    else:
-        form = KuesionerForm()
+                # 1. Save personal info to Responden
+                responden = Responden.objects.create(
+                    nama                = data['nama'],
+                    usia                = data['usia'],
+                    pendidikan_terakhir = data['pendidikan_terakhir'],
+                    umkm                = data['umkm'],
+                    address             = data['address'],
+                    phone_number        = data['phone_number'],
+                )
 
-    return render(request, 'kuesioner/index.html', {'form': form})
+                # 2. Loop through all Likert answers and save to Jawaban
+                jawaban_list = []
+                for field_name, value in data.items():
+                    # Only process fields that match a variabel prefix (e.g. PEOU_1, PU_2)
+                    parts = field_name.split('_')
+                    prefix = parts[0]  # e.g. "PEOU", "PU", "CONF"
 
-def success_view(request):
-    return render(request, 'success.html')
+                    if prefix in VARIABEL_MAP:
+                        jawaban_list.append(Jawaban(
+                            responden = responden,
+                            variabel  = VARIABEL_MAP[prefix],
+                            kode_item = field_name,   # e.g. "PEOU_1"
+                            skor      = int(value),
+                        ))
+
+                # bulk_create saves all Jawaban rows in one query
+                Jawaban.objects.bulk_create(jawaban_list)
+
+            messages.success(request, 'Terima kasih! Jawaban Anda telah tersimpan.')
+            return redirect('questionnaire.sukses')
+
+        # Form invalid — re-render with errors
+        return render(request, 'questionnaire/form.html', {'form': form})
+
+    # GET request — show empty form
+    form = RespondenForm()
+    return render(request, 'questionnaire/form.html', {'form': form})
+
+def questionnaire_detail_view(request, respondent_id):
+    responden = get_object_or_404(Responden, pk=respondent_id)
+
+    # Build initial data dict from saved Jawaban rows
+    initial_data = {
+        'nama'                : responden.nama,
+        'usia'                : responden.usia,
+        'pendidikan_terakhir' : responden.pendidikan_terakhir,
+        'umkm'                : responden.umkm,
+        'address'             : responden.address,
+        'phone_number'        : responden.phone_number,
+    }
+
+    # Add each Likert answer — kode_item is already the field name e.g. "PEOU_1"
+    for jawaban in responden.jawaban.all():
+        initial_data[jawaban.kode_item] = str(jawaban.skor)  # str() because ChoiceField expects string
+
+    # Pass initial data into the form — this pre-selects all the radio buttons
+    form = RespondenForm(initial=initial_data)
+
+    return render(request, 'questionnaire/detail.html', {
+        'form'      : form,
+        'responden' : responden,
+    })
+
+def questionnaire_sukses_view(request):
+    return render(request, 'questionnaire/success.html')
+
+def questionnaire_export_view(request):
+    if request.method == 'POST':
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename="DataKuesioner.csv"'
+
+        writer = csv.writer(response)
+
+        # Header row
+        writer.writerow([
+            'No', 'Nama', 'Usia', 'Pendidikan Terakhir', 'Asal UMKM',
+            'Alamat', 'Nomor HP', 'Tanggal Submit',
+            *JAWABAN_CODES  # unpack all Likert column headers
+        ])
+
+        respondents = Responden.objects.all().order_by('-submitted_at')
+
+        for idx, responden in enumerate(respondents):
+            # Build a dict of kode_item -> skor for quick lookup
+            jawaban_map = {
+                j.kode_item: j.skor
+                for j in responden.jawaban.all()
+            }
+
+            # Get each score in order, default to '' if missing
+            scores = [jawaban_map.get(code, '') for code in JAWABAN_CODES]
+
+            writer.writerow([
+                idx + 1,
+                responden.nama,
+                responden.usia,
+                responden.pendidikan_terakhir,
+                responden.umkm,
+                responden.address,
+                responden.phone_number,
+                responden.submitted_at.strftime('%d-%m-%Y %H:%M'),
+                *scores
+            ])
+
+        return response
+
+    return render(request, 'questionnaire/index.html')
 
 def daily_demand(mean, sd, zero_threshold_factor=1.0):
     """Return a stochastic daily demand value (may be 0)."""
@@ -3837,3 +3965,4 @@ def evaluate_policy(product, demand, R, s, S, T):
         "c_total": total_cost,
         "stockout": total_stockout
     }
+    

@@ -23,6 +23,13 @@ PENDIDIKAN_CHOICES = [
     ('S3', 'S3'),
 ]
 
+SKOR_CHOICES = [
+    (1, 'STS'),
+    (2, 'TS'),
+    (3, 'S'),
+    (4, 'SS'),
+]
+
 class OutletForm(ModelForm):
     class Meta:
         # merelasikan form dengan model
@@ -498,3 +505,78 @@ class KuesionerForm(forms.Form):
             'placeholder': '',
         })
     )
+
+class RespondenForm(forms.Form):
+    nama             = forms.CharField(max_length=150)
+    usia = forms.ChoiceField(
+        label='Usia',
+        choices=USIA_CHOICES,
+        widget=forms.RadioSelect(attrs={
+            'class': 'form-radio',
+        })
+    )
+    pendidikan_terakhir = forms.ChoiceField(
+        label='Pendidikan Terakhir',
+        choices=PENDIDIKAN_CHOICES,
+        widget=forms.RadioSelect(attrs={
+            'class': 'form-radio',
+        })
+    )
+    umkm             = forms.CharField(max_length=200)
+    address = forms.CharField(
+        label='Alamat',
+        max_length=100,
+        widget=forms.TextInput(attrs={
+            'class': 'form-input',
+            'placeholder': '',
+        })
+    )
+    phone_number     = forms.CharField(max_length=20)
+
+    # PEOU items
+    PEOU_1 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    PEOU_2 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    PEOU_3 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    PEOU_4 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    PEOU_5 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+
+    # PU items
+    PU_1 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    PU_2 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    PU_3 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    PU_4 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    PU_5 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+
+    # CONF items
+    CONF_1 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    CONF_2 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    CONF_3 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    CONF_4 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    CONF_5 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+
+    # ATT items
+    ATT_1 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    ATT_2 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    ATT_3 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    ATT_4 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    ATT_5 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+
+    # TRST items
+    TRST_1 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    TRST_2 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    TRST_3 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    TRST_4 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    TRST_5 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+
+    # SAT items
+    SAT_1 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    SAT_2 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    SAT_3 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    SAT_4 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    SAT_5 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+
+    # CI items
+    CI_1 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    CI_2 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    CI_3 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
+    CI_4 = forms.ChoiceField(choices=SKOR_CHOICES, widget=forms.RadioSelect)
