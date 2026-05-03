@@ -38,13 +38,15 @@
         </div>
 
         <div class="text-right">
-            <div>
-                <form method="post" action="{% url 'questionnaire.export' %}">
-                    {% csrf_token %}
-                    <button type="submit" class="btn btn-success">Export</button>
-                </form>
+            <div class="d-flex">
+                <div class="mr-2">
+                    <form method="post" action="{% url 'questionnaire.export' %}">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-success"><i class="far fa-file-excel mr-1"></i>Export</button>
+                    </form>
+                </div>
+                <a href="{% url 'questionnaire.isi' %}" class="btn btn-primary" target="_blank" data-toggle="tooltip" title="Fill"><i class="fa fa-plus mr-1"></i> Fill</a>
             </div>
-            <a href="{% url 'questionnaire.isi' %}" class="btn btn-primary" target="_blank" data-toggle="tooltip" title="Fill"><i class="fa fa-plus mr-1"></i> Fill</a>
         </div>
 
         <br>
