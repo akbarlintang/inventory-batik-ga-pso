@@ -982,27 +982,6 @@ def export_view(request):
 
     return render(request, 'export/index.html', context)
 
-def kuesioner_view(request):
-    if request.method == 'POST':
-        form = KuesionerForm(request.POST)
-        if form.is_valid():
-            # Access cleaned data
-            nama = form.cleaned_data['nama']
-            usia = form.cleaned_data['usia']
-            pendidikan_terakhir = form.cleaned_data['pendidikan_terakhir']
-
-            # TODO: Save to database or process as needed
-            # Example: MyModel.objects.create(nama=nama, usia=usia, pendidikan_terakhir=pendidikan_terakhir)
-
-            return redirect('success')  # Redirect to a success page
-    else:
-        form = KuesionerForm()
-
-    return render(request, 'kuesioner/index.html', {'form': form})
-
-def success_view(request):
-    return render(request, 'success.html')
-
 def daily_demand(mean, sd, zero_threshold_factor=1.0):
     """Return a stochastic daily demand value (may be 0)."""
     random_num = np.random.uniform(0, 1)
@@ -1035,32 +1014,29 @@ def simulate_inventory(product):
 # ---------------------------------------------------------------------------
 
 def per_review(product, demand):
+    """EOQ-based periodic-review formula. Returns (total_cost, review_interval)."""
     to = math.sqrt(
         (2 * product["biaya_pesan"]) /
         (product["permintaan_baku"] * product["biaya_simpan"])
     )
 
     alpha   = to * product["biaya_simpan"] / product["biaya_kekurangan"]
-    # Clamp alpha to valid CDF range so inv_cdf doesn't blow up
-    alpha   = max(1e-6, min(alpha, 1 - 1e-6))
     z_alpha = -NormalDist().inv_cdf(alpha)
 
-    # ← was hardcoded norm.pdf(2.22); use the actual z_alpha
-    fz_alpha = norm.pdf(z_alpha)
-    wz_alpha = norm.cdf(z_alpha)          # Φ(z), not fz - 0.00001
+    fz_alpha = norm.pdf(2.22, loc=0, scale=1)
+    wz_alpha = fz_alpha - 0.00001
 
     R = (
         product["permintaan_baku"] * to
         + product["permintaan_baku"] * product["lead_time"]
-        + z_alpha * product["standar_deviasi"] * math.sqrt(to + product["lead_time"])
+        + z_alpha * math.sqrt(to + product["lead_time"])
     )
 
-    # Expected units short per cycle using the unit normal loss function
-    # L(z) = φ(z) - z·(1-Φ(z))
-    L_z = fz_alpha - z_alpha * (1 - wz_alpha)
-    N   = max(0, math.ceil(
-        product["standar_deviasi"] * math.sqrt(to + product["lead_time"]) * L_z
-    ))
+    N = math.ceil(
+        product["standar_deviasi"]
+        * math.sqrt(to + product["lead_time"])
+        * -(fz_alpha - z_alpha * wz_alpha)
+    )
 
     T = (
         product["permintaan_baku"] * product["harga_produk"]
@@ -1140,15 +1116,9 @@ def find_rss(to, product):
 #     total_stockout = round(sum(tot_lost))
 
 #     if std_dev_daily > 0:
-#         z = (total_daily_demand - mean_daily_demand) / std_dev_daily
-
-#         phi = norm.pdf(z)
-#         Phi = norm.cdf(z)
-
-#         E_Rv = std_dev_daily * phi + (mean_daily_demand - total_daily_demand) * (1 - Phi)
-
-#         # numerical safety
-#         E_Rv = max(E_Rv, 0.0)
+#         def integrand(x):
+#             return (x - total_daily_demand) * norm.pdf(x, mean_daily_demand, std_dev_daily)
+#         E_Rv, _ = quad(integrand, total_daily_demand, np.inf)
 #     else:
 #         E_Rv = 0.0
 
@@ -1181,151 +1151,28 @@ def find_rss(to, product):
 
 #     return composite, total_stockout
 
-# def min_fitness(product, demand, init_R, init_s, init_S, init_T, purchases_freq, tot_lost, stockout_weight=0.5):
+def min_fitness(product, demand, init_R, init_s, init_S, init_T, purchases_freq, tot_lost, stockout_weight=1.0):
     
-#     init_R = max(int(round(init_R)), 1)
-#     init_s = max(int(round(init_s)), 1)
-#     init_S = max(int(round(init_S)), init_s + 1)
-#     init_T = max(int(round(init_T)), 1)
-
-#     # Re-simulate with current genes — this is the key fix
-#     (_, _, _, _, fresh_tot_lost, _, fresh_pf, _, _) = calculate_inventory_levels_rss(demand[:init_T], init_R, init_s, init_S)
-
-#     total_stockout = round(sum(fresh_tot_lost))
-#     biaya_order    = product.get("biaya_order", product.get("biaya_pesan", 0))
-#     tot_demand     = round(sum(demand[:init_T]))
-
-#     c_order    = biaya_order * (init_T / (max(fresh_pf, 1) * init_R))
-#     c_hold     = product["biaya_simpan"] * round((init_S + init_s) / 2)
-#     c_stockout = product["biaya_kekurangan"] * total_stockout
-#     c_total    = c_order + c_hold + c_stockout
-#     # composite  = c_total + stockout_weight * total_stockout
-#     composite  = c_total
-
-#     return composite, total_stockout
-
-# def min_fitness(product, demand, init_R, init_s, init_S, init_T, purchases_freq, tot_lost, stockout_weight=1.0):
-#     init_R = max(int(round(init_R)), 1)
-#     init_s = max(int(round(init_s)), 1)
-#     init_S = max(int(round(init_S)), init_s + 1)
-#     init_T = max(int(round(init_T)), 1)
-
-#     (inventory_levels, _, _, _, fresh_tot_lost, _, fresh_pf, _, _) = (
-#         calculate_inventory_levels_rss(demand[:init_T], init_R, init_s, init_S, lead_time=product.get("lead_time", 1))
-#     )
-
-#     total_stockout = round(sum(fresh_tot_lost))
-#     biaya_order    = product.get("biaya_order", product.get("biaya_pesan", 0))
-#     biaya_kurang   = product["biaya_kekurangan"]
-
-#     half_demand     = demand[:init_T]
-#     mean_daily      = np.mean(half_demand) if half_demand else 0
-#     std_daily       = np.std(half_demand, ddof=1) / np.sqrt(init_T) if len(half_demand) > 1 else 1e-9
-#     total_daily_dmd = round(sum(half_demand) / init_T) if init_T > 0 else 0
-
-#     # c_order = biaya_order * (init_T / (max(fresh_pf, 1) * init_R))
-#     c_order = biaya_order * (init_T / max(fresh_pf, 1))
-#     c_hold  = product["biaya_simpan"] * round((init_S + init_s) / 2)
-
-#     # ── analytical expected shortage (smooth gradient) ──────────────────
-#     if std_daily > 0:
-#         z    = (total_daily_dmd - mean_daily) / std_daily
-#         E_Rv = std_daily * norm.pdf(z) + (mean_daily - total_daily_dmd) * (1 - norm.cdf(z))
-#         E_Rv = max(E_Rv, 0.0)
-#     else:
-#         E_Rv = 0.0
-
-#     c_stockout_analytical = biaya_kurang * E_Rv
-
-#     # ── actual simulated stockout cost (hard penalty for real shortages) ─
-#     c_stockout_actual = biaya_kurang * total_stockout * 0.01  # scaled down so units are comparable
-
-#     # ── blended: analytical drives smooth gradient, actual prevents collapse
-#     c_stockout = c_stockout_analytical + stockout_weight * c_stockout_actual
-#     # c_stockout = c_stockout_analytical
-
-#     c_total   = c_order + c_hold + c_stockout
-#     composite = c_total
-
-#     return composite, total_stockout
-
-def min_fitness(
-    product,
-    demand,
-    init_R,
-    init_s,
-    init_S,
-    init_T,
-    purchases_freq,
-    tot_lost,
-    stockout_weight=1.0,
-    baseline_stockout=None,
-    baseline_hold=None,
-):
     init_R = max(int(round(init_R)), 1)
     init_s = max(int(round(init_s)), 1)
     init_S = max(int(round(init_S)), init_s + 1)
     init_T = max(int(round(init_T)), 1)
 
-    (
-        inventory_levels,
-        _,
-        _,
-        _,
-        fresh_tot_lost,
-        _,
-        fresh_pf,
-        _,
-        _,
-    ) = calculate_inventory_levels_rss(
-        demand[:init_T],
-        init_R,
-        init_s,
-        init_S,
-    )
+    # Re-simulate with current genes — this is the key fix
+    (_, _, _, _, fresh_tot_lost, _, fresh_pf, _, _) = calculate_inventory_levels_rss(demand[:init_T], init_R, init_s, init_S)
 
     total_stockout = round(sum(fresh_tot_lost))
+    biaya_order    = product.get("biaya_order", product.get("biaya_pesan", 0))
+    tot_demand     = round(sum(demand[:init_T]))
 
-    biaya_order = product.get("biaya_order", product.get("biaya_pesan", 0))
-    biaya_simpan = product["biaya_simpan"]
-    biaya_kurang = product["biaya_kekurangan"]
+    c_order    = biaya_order * (init_T / (max(fresh_pf, 1) * init_R))
+    c_hold     = product["biaya_simpan"] * round((init_S + init_s) / 2)
+    c_stockout = product["biaya_kekurangan"] * total_stockout
+    c_total    = c_order + c_hold + c_stockout
+    composite  = c_total + stockout_weight * total_stockout
+    # composite  = c_total
 
-    half_demand     = demand[:init_T]
-    mean_daily      = np.mean(half_demand) if half_demand else 0
-    std_daily       = np.std(half_demand, ddof=1) / np.sqrt(init_T) if len(half_demand) > 1 else 1e-9
-    total_daily_dmd = round(sum(half_demand) / init_T) if init_T > 0 else 0
-
-    fresh_pf = max(fresh_pf, 1)
-
-    c_order = biaya_order * (init_T / (fresh_pf * init_R))
-    c_hold = biaya_simpan * round((init_S + init_s) / 2)
-
-    if std_daily > 0:
-        z    = (total_daily_dmd - mean_daily) / std_daily
-        E_Rv = std_daily * norm.pdf(z) + (mean_daily - total_daily_dmd) * (1 - norm.cdf(z))
-        E_Rv = max(E_Rv, 0.0)
-    else:
-        E_Rv = 0.0
-
-    c_stockout = biaya_kurang * E_Rv
-
-    c_total = c_order + c_hold + c_stockout
-
-    if baseline_stockout is None or baseline_hold is None:
-        return c_total, total_stockout
-
-    target_stockout = baseline_stockout * STOCKOUT_TARGET_RATIO
-    max_hold = baseline_hold * HOLD_LIMIT_RATIO
-
-    stockout_violation = max(0, total_stockout - target_stockout)
-    hold_violation = max(0, c_hold - max_hold)
-
-    stockout_penalty = c_total * 10 * (stockout_violation / max(baseline_stockout, 1)) ** 2
-    hold_penalty = c_total * 10 * (hold_violation / max(baseline_hold, 1)) ** 2
-
-    fitness = c_total + stockout_penalty + hold_penalty
-
-    return fitness, total_stockout
+    return composite, total_stockout
 
 def calculate_inventory_cost(product_list, to_list):
     """Compute EOQ-based inventory cost for a list of products (used for histogram)."""
@@ -1386,10 +1233,11 @@ def calculate_first_inventory_levels_rss(demand_result, purchases_result):
     return (inventory_level, total_demand_list, units_lost_list,
             purchases_freq, purchases_total, restock_array)
 
-def calculate_inventory_levels_rss(demand_result, R, s, S, lead_time=1):
+def calculate_inventory_levels_rss(demand_result, R, s, S):
     """
-    lead_time is now a parameter (in days, rounded to int).
-    Pass product["lead_time"] from the caller.
+    Simulate inventory using the (R, s, S) periodic-review policy.
+    Review every R days; if stock < s, order up to S after lead_time=1 day.
+    Starts with inventory = S (fully stocked).
     """
     inventory_level   = []
     units_lost_list   = []
@@ -1399,39 +1247,40 @@ def calculate_inventory_levels_rss(demand_result, R, s, S, lead_time=1):
     purchases_list    = []
 
     review_period   = max(int(round(R)), 1)
-    lead_time       = max(1, int(round(lead_time)))   # ← was hardcoded to 1
+    lead_time       = 1
     max_inventory   = S
     inventory       = S
-    pending_order   = 0     # quantity on order, arrives after lead_time days
-    order_eta       = -1    # day on which order arrives
+    order_placed    = False
+    counter         = 0
     purchases_freq  = 0
     purchases_total = 0
 
     for day, demand in enumerate(demand_result):
-        # Receive pending order
-        if day == order_eta:
-            inventory       += pending_order
-            purchases_freq  += 1
-            purchases_total += pending_order
-            purchases_list.append(pending_order)
-            restock_array.append(pending_order)
-            pending_order = 0
-            order_eta     = -1
-        else:
-            purchases_list.append(0)
-            restock_array.append(0)
-
-        # Periodic review
-        if day % review_period == 0 and order_eta == -1:
+        if day % review_period == 0 and not order_placed:
             if inventory < s:
-                pending_order = max(0, max_inventory - inventory)
-                order_eta     = day + lead_time
+                order_placed = True
+                counter      = 0
 
-        # Satisfy demand
+        if order_placed:
+            counter += 1
+
+        if order_placed and counter == lead_time:
+            restock_qty      = max(0, max_inventory - inventory)
+            inventory       += restock_qty
+            restock_array.append(restock_qty)
+            purchases_list.append(restock_qty)
+            purchases_total += restock_qty
+            purchases_freq  += 1
+            order_placed     = False
+            counter          = 0
+        else:
+            restock_array.append(0)
+            purchases_list.append(0)
+
         if inventory >= demand:
             inventory -= demand
-            sales      = demand
             stock_out  = 0
+            sales      = demand
         else:
             stock_out  = demand - inventory
             sales      = inventory
@@ -1449,81 +1298,39 @@ def calculate_inventory_levels_rss(demand_result, R, s, S, lead_time=1):
 # ---------------------------------------------------------------------------
 # Genetic-algorithm operators
 # ---------------------------------------------------------------------------
-def tournament_select(population, fitness_scores, k=3):
-    """Pick k random individuals and return the fittest."""
-    candidates = random.sample(range(len(population)), min(k, len(population)))
-    best_idx   = min(candidates, key=lambda i: fitness_scores[i][0])
-    return population[best_idx]
-
-NUMERIC_GENES = [2, 3, 4, 5]
-def crossover(p1, p2, crossover_rate):
-    if random.random() >= crossover_rate:
-        return p1, p2
-
-    # Blend only numeric genes; structural fields (product dict, demand list)
-    # always come from p1 — they must not be mixed between individuals.
-    genes1 = list(p1)
-    genes2 = list(p2)
-
-    for i in NUMERIC_GENES:
-        if random.random() < 0.5:
-            genes1[i], genes2[i] = genes2[i], genes1[i]
-
-    child1 = fix_S_s(tuple(genes1))
-    child2 = fix_S_s(tuple(genes2))
-    return child1, child2
-
-def log_scaled_mutation(individual, mutation_rate, sigma=0.1, lower_bound=1, upper_bound=1000, max_gap=10000):
-
+def log_scaled_mutation(individual, mutation_rate, sigma=0.1, lower_bound=1, upper_bound=10000):
+    """
+    Log-scaled mutation on numeric genes.
+    Index 5 (T) is skipped — preserved as an integer choice.
+    After mutation, ensures S > s.
+    """
     mutated = list(individual)
+    # prod = mutated[0]
+
+    # safety_floor = max(1, round(1.65 * prod.get("standar_deviasi", 1) * math.sqrt(prod.get("lead_time", 1))))
 
     for i, gene in enumerate(mutated):
         if i == 5:
             continue
         if not isinstance(gene, (int, float)):
             continue
-
         if random.random() < mutation_rate:
-            r = random.gauss(0, sigma)
+            r            = random.gauss(0, sigma)
             mutated_gene = gene * (10 ** r)
+            mutated[i]   = max(min(mutated_gene, upper_bound), lower_bound)
 
-            mutated[i] = max(min(mutated_gene, upper_bound), lower_bound)
+    _, _, _, temp_s, temp_S, _, _, _ = mutated
+    # mutated[3] = max(temp_s, safety_floor)
+    mutated[4] = max(temp_s + 1, temp_S)
 
-    return fix_S_s(tuple(mutated), max_gap=max_gap)
+    return tuple(mutated)
 
-def fix_S_s(individual, max_gap=10000):
+def fix_S_s(individual):
+    """After crossover, guarantee S > s and T is an integer."""
     prod, demand, R, s, S, T, purchases_freq, tot_lost = individual
-
-    mean_d = np.mean(demand) if len(demand) > 0 else 1
-    std_d  = np.std(demand)  if len(demand) > 1 else 0
-    lead   = max(prod.get("lead_time", 1), 0.1)
-
-    # ── minimum reorder point = demand during lead time + safety stock ──
-    # z_safety = 1.65                               # 95 % service level
-    z_safety = 0.84
-    safety   = z_safety * std_d * np.sqrt(lead)
-    min_s    = int(mean_d * lead + safety)        # replaces old max_s cap
-    min_s    = max(min_s, 2)
-
-    # ── max S = enough to cover one full review cycle + lead time ───────
-    # max_S = int(mean_d * (R + lead) * 2 + safety * 2) + 1
-    max_S = int(mean_d * (R + lead) * 1.05 + safety)
-    max_S = max(max_S, min_s + 2)
-
-    s = max(s, min_s)                             # s must be AT LEAST min_s
-    S = max(s + 1, int(round(S)))
-    S = min(S, max_S)
+    S = max(s + 1, S)
     T = int(round(T))
-
-    if S - s > max_gap:
-        S = s + max_gap
-
     return (prod, demand, R, s, S, T, purchases_freq, tot_lost)
-
-def adaptive_sigma(generation, num_generations, sigma_start=0.15, sigma_end=0.03):
-    """Exponential decay from sigma_start to sigma_end over all generations."""
-    t = generation / max(num_generations - 1, 1)
-    return sigma_start * (sigma_end / sigma_start) ** t
 
 # ---------------------------------------------------------------------------
 # Genetic algorithm  (core — called by PSO and directly by views)
@@ -1553,52 +1360,24 @@ def genetic_algorithm(product_data, population_size, num_generations, crossover_
         )
     )
 
-    baseline_result = calculate_inventory_levels_rss(
-        daily_sales[:first_T],
-        first_R,
-        first_s,
-        first_S,
-    )
-
-    baseline_stockout = round(sum(baseline_result[4]))
-    baseline_hold = product_data["biaya_simpan"] * round((first_S + first_s) / 2)
-
     first_calc_duration = time.time() - first_start_time
 
     # ------------------------------------------------------------------ #
     # Initial population
     # ------------------------------------------------------------------ #
     population      = []
-    variation       = 20
-    # stock_variation = 1500
-    stock_variation = min(max(50, first_s // 4), 200)
+    variation       = 15
+    stock_variation = 5000
     s_floor = max(2, first_s)
 
     for _ in range(population_size):
         rand_R = random.randint(max(1, first_R - variation), first_R + variation)
         # rand_s = random.randint(max(2, first_s - stock_variation), first_s + stock_variation)
-
-        # Use safety-stock-aware floor, not just first_s // 2
-        std_d    = np.std(daily_sales) if len(daily_sales) > 1 else 0
-        lead     = max(product_data.get("lead_time", 1), 0.1)
-        ss_floor = int(np.mean(daily_sales) * lead + 1.65 * std_d * np.sqrt(lead))
-        ss_floor = max(ss_floor, 2)
-
-        rand_s = random.randint(ss_floor, max(ss_floor + 1, first_s + stock_variation))
-
-        # q_min  = max(10, first_S - first_s - stock_variation // 2)
-        # q_max  = first_S - first_s + stock_variation
-        # rand_Q = random.randint(q_min, max(q_min + 1, q_max))
-        # rand_S = rand_s + rand_Q
-
-        q_min  = max(50, first_S - first_s)
-        q_max  = max(100, first_S - first_s + stock_variation)
-        rand_Q = random.randint(q_min, q_max)
-        rand_S = rand_s + rand_Q
-
+        rand_s = random.randint(s_floor, s_floor + stock_variation)
+        rand_S = random.randint(max(rand_s + 1, first_S), first_S + stock_variation)
         rand_T = int(random.choice([30, 45, 60]))
 
-        (_, _, _, _, pop_tot_lost, _, pop_purchases_freq, _, _) = calculate_inventory_levels_rss(daily_sales[:rand_T], rand_R, rand_s, rand_S, lead_time=product_data.get("lead_time", 1))
+        (_, _, _, _, pop_tot_lost, _, pop_purchases_freq, _, _) = calculate_inventory_levels_rss(daily_sales[:rand_T], rand_R, rand_s, rand_S)
 
         population.append((product_data, daily_sales,
                             rand_R, rand_s, rand_S, rand_T,
@@ -1610,30 +1389,12 @@ def genetic_algorithm(product_data, population_size, num_generations, crossover_
     best_start_time = time.time()
     best_solution   = population[0]
 
-    ELITE_K = 3
-
     for generation in range(num_generations):
         fitness_scores = []
         for individual in population:
             prod_sim, demand_res, iR, is_, iS, iT, ipf, itl = individual
-            # cost, stockout = min_fitness(prod_sim, demand_res, iR, is_, iS, iT, ipf, itl, stockout_weight=stockout_weight)
-            cost, stockout = min_fitness(
-                prod_sim,
-                demand_res,
-                iR,
-                is_,
-                iS,
-                iT,
-                ipf,
-                itl,
-                stockout_weight=stockout_weight,
-                baseline_stockout=baseline_stockout,
-                baseline_hold=baseline_hold,
-            )
+            cost, stockout = min_fitness(prod_sim, demand_res, iR, is_, iS, iT, ipf, itl, stockout_weight=stockout_weight)
             fitness_scores.append((cost, stockout))
-
-            ranked = sorted(zip(population, fitness_scores), key=lambda x: (x[1][0], x[1][1]))
-            elites = [ind for ind, _ in ranked[:ELITE_K]]
 
         if not population:
             break
@@ -1648,36 +1409,32 @@ def genetic_algorithm(product_data, population_size, num_generations, crossover_
 
         # Selection (roulette wheel)
         weights = [1.0 / (1.0 + c + s) for c, s in fitness_scores]
-        parents = [
-            (tournament_select(population, fitness_scores),
-            tournament_select(population, fitness_scores))
-            for _ in range(population_size // 2)
-        ]
+        parents = []
+        for _ in range(population_size // 2):
+            p1 = random.choices(population, weights=weights)[0]
+            p2 = random.choices(population, weights=weights)[0]
+            parents.append((p1, p2))
 
         # Crossover
         offspring = []
         for p1, p2 in parents:
-            child1, child2 = crossover(p1, p2, crossover_rate)
+            if random.random() < crossover_rate:
+                mask   = [random.randint(0, 1) for _ in range(len(p1))]
+                child1 = tuple(p1[i] if mask[i] == 0 else p2[i] for i in range(len(p1)))
+                child2 = tuple(p2[i] if mask[i] == 0 else p1[i] for i in range(len(p1)))
+            else:
+                child1, child2 = p1, p2
+
+            child1 = fix_S_s(child1)
+            child2 = fix_S_s(child2)
             offspring.extend([child1, child2])
 
         # Mutation
-        sigma = adaptive_sigma(generation, num_generations)
-        offspring = [
-            log_scaled_mutation(ind, mutation_rate, sigma=sigma)
-            for ind in offspring
-        ]
+        offspring = [log_scaled_mutation(ind, mutation_rate) for ind in offspring]
 
         # Inject elite back into population (replace worst)
-        offspring_ranked = sorted(
-            zip(offspring, [min_fitness(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]) for p in offspring]),
-            key=lambda x: (x[1][0], x[1][1]),
-            reverse=True,   # worst first so we overwrite them
-        )
-        for idx, elite in enumerate(elites):
-            offspring[-(idx + 1)] = elite
-
-        population = offspring
-        best_solution = elites[0]
+        offspring[-1] = elite
+        population    = offspring
 
     # ------------------------------------------------------------------ #
     # Extract best solution
@@ -1696,7 +1453,7 @@ def genetic_algorithm(product_data, population_size, num_generations, crossover_
         stockout_weight=stockout_weight
     )
 
-    (inventory_level_list, purchases_list, sales_list, tot_dmd, tot_lost, max_inventory, purchases_freq, purchases_total, restock_data) = calculate_inventory_levels_rss(best_demand[:best_T], best_R, best_s, best_S, lead_time=best_product.get("lead_time", 1))
+    (inventory_level_list, purchases_list, sales_list, tot_dmd, tot_lost, max_inventory, purchases_freq, purchases_total, restock_data) = calculate_inventory_levels_rss(best_demand[:best_T], best_R, best_s, best_S)
 
     best_calc_duration = time.time() - best_start_time
 
@@ -1736,19 +1493,18 @@ def genetic_algorithm(product_data, population_size, num_generations, crossover_
 
 # Bounds for each hyperparameter dimension
 PSO_BOUNDS = {
-    'population_size':  (30,  70),
-    'num_generations':  (30,  70),
-    'crossover_rate':   (0.75, 0.95),
-    'mutation_rate':    (0.03, 0.15),
+    'population_size':  (0,   150),
+    'crossover_rate':   (0.7,  1.0),
+    'mutation_rate':    (0.01, 0.2),
 }
 
 # Lightweight GA budget used *inside* PSO evaluation
-PSO_INNER_POP  = 40
-PSO_INNER_GEN  = 40
+PSO_INNER_POP  = 15
+PSO_INNER_GEN  = 15
 
 # PSO algorithm settings
-PSO_N_PARTICLES = 5
-PSO_N_ITERS     = 5
+PSO_N_PARTICLES = 10
+PSO_N_ITERS     = 20
 PSO_W           = 0.7    # inertia
 PSO_C1          = 1.5    # cognitive coefficient
 PSO_C2          = 1.5    # social coefficient
@@ -1761,58 +1517,72 @@ PSO_STOCKOUT_WEIGHT = 1.0
 
 def _clip_particle(position):
     lo = [PSO_BOUNDS['population_size'][0],
-          PSO_BOUNDS['num_generations'][0],   # ← add
-          PSO_BOUNDS['crossover_rate'][0],
-          PSO_BOUNDS['mutation_rate'][0]]
+        PSO_BOUNDS['crossover_rate'][0],
+        PSO_BOUNDS['mutation_rate'][0]]
     hi = [PSO_BOUNDS['population_size'][1],
-          PSO_BOUNDS['num_generations'][1],   # ← add
-          PSO_BOUNDS['crossover_rate'][1],
-          PSO_BOUNDS['mutation_rate'][1]]
-    return [max(lo[i], min(hi[i], position[i])) for i in range(4)]
+        PSO_BOUNDS['crossover_rate'][1],
+        PSO_BOUNDS['mutation_rate'][1]]
+    return [max(lo[i], min(hi[i], position[i])) for i in range(3)]
 
 def _decode_particle(position):
-    pop_size        = max(2,  int(round(position[0])))
-    num_generations = max(5,  int(round(position[1])))   # ← add
-    crossover_rate  = float(position[2])
-    mutation_rate   = float(position[3])
-    return pop_size, num_generations, crossover_rate, mutation_rate
+    """
+    Convert a raw PSO position vector to typed hyperparameters.
+    Integer dimensions are rounded; floats are kept as-is.
+    """
+    pop_size        = max(2, int(round(position[0])))
+    crossover_rate  = float(position[1])
+    mutation_rate   = float(position[2])
+    return pop_size, crossover_rate, mutation_rate
 
 def _evaluate_particle(position, product_data, daily_sales, daily_purchases,
                         stockout_weight=PSO_STOCKOUT_WEIGHT):
     pop_size, num_generations, crossover_rate, mutation_rate = _decode_particle(position)
+    """
+    Run the GA with the hyperparameters encoded in *position* and return
+    the composite fitness score (lower is better).
 
-    # Keep a lightweight ceiling so PSO evaluation stays cheap.
-    # PSO will still explore the full num_generations range in decode,
-    # but each inner run is capped to avoid wall-time explosion.
-    inner_pop = min(pop_size, PSO_INNER_POP)
-    inner_gen = min(num_generations, PSO_INNER_GEN)
+    Uses a fixed lightweight inner budget so each PSO evaluation is cheap.
+    """
+    
+    pop_size        = pop_size
+    num_generations = num_generations
 
     try:
         result          = genetic_algorithm(
-            product_data, inner_pop, inner_gen,
+            product_data, pop_size, num_generations,
             crossover_rate, mutation_rate,
             daily_sales, daily_purchases,
-            stockout_weight=stockout_weight,
+            stockout_weight=stockout_weight
         )
         best_total_cost = result[16]
-        total_stockout  = round(sum(result[9]))
+        tot_lost        = result[9]
+        total_stockout  = round(sum(tot_lost))
         return best_total_cost + stockout_weight * total_stockout
     except Exception:
+        # If a particle configuration produces a degenerate GA run,
+        # return a very large penalty so PSO steers away from it.
         return float('inf')
 
-def pso_optimize_hyperparameters(product_data, daily_sales, daily_purchases,
-                                  n_particles=PSO_N_PARTICLES, n_iters=PSO_N_ITERS,
-                                  w=PSO_W, c1=PSO_C1, c2=PSO_C2,
-                                  stockout_weight=PSO_STOCKOUT_WEIGHT):
-    lo  = [PSO_BOUNDS['population_size'][0],
-           PSO_BOUNDS['num_generations'][0],   # ← add
-           PSO_BOUNDS['crossover_rate'][0],
-           PSO_BOUNDS['mutation_rate'][0]]
-    hi  = [PSO_BOUNDS['population_size'][1],
-           PSO_BOUNDS['num_generations'][1],   # ← add
-           PSO_BOUNDS['crossover_rate'][1],
-           PSO_BOUNDS['mutation_rate'][1]]
-    dim = 4   # ← was 3
+def pso_optimize_hyperparameters(product_data, daily_sales, daily_purchases, n_particles=PSO_N_PARTICLES, n_iters=PSO_N_ITERS, w=PSO_W, c1=PSO_C1, c2=PSO_C2, stockout_weight=PSO_STOCKOUT_WEIGHT):
+    """
+    Run Particle Swarm Optimisation to find the best GA hyperparameters
+    for the given product and demand data.
+
+    Returns
+    -------
+    best_params : dict
+        Keys: population_size, num_generations, crossover_rate, mutation_rate
+    best_score : float
+        The composite inventory cost achieved by the best hyperparameter set
+    history : list of float
+        Global best score at each PSO iteration (for plotting convergence)
+    """
+    lo = [PSO_BOUNDS['population_size'][0],  PSO_BOUNDS['num_generations'][0],
+            PSO_BOUNDS['crossover_rate'][0],    PSO_BOUNDS['mutation_rate'][0]]
+    hi = [PSO_BOUNDS['population_size'][1],  PSO_BOUNDS['num_generations'][1],
+            PSO_BOUNDS['crossover_rate'][1],    PSO_BOUNDS['mutation_rate'][1]]
+
+    dim = 4  # number of hyperparameter dimensions
 
     # ---- Initialise particles ----------------------------------------- #
     positions  = []
@@ -1891,6 +1661,19 @@ def pso_optimize_hyperparameters(product_data, daily_sales, daily_purchases,
 # Convenience wrapper used by both views
 # ---------------------------------------------------------------------------
 def run_with_pso(product_data, daily_sales, daily_purchases, user_pop_size, user_num_gen, user_cr, user_mr, use_pso=True, pso_n_particles=PSO_N_PARTICLES, pso_n_iters=PSO_N_ITERS, stockout_weight=PSO_STOCKOUT_WEIGHT):
+    """
+    If use_pso=True:
+        1. Run PSO to find optimal hyperparameters (cheap inner budget).
+        2. Run one final GA with those hyperparameters at the user's budget
+            (population_size and num_generations from the form are used as
+            the *ceiling* for the final GA run if they are larger than what
+            PSO found; otherwise PSO's values win).
+        3. Return GA result tuple + pso metadata dict.
+
+    If use_pso=False:
+        Just run the GA with the user-supplied hyperparameters and return
+        dummy pso metadata.
+    """
     pso_meta = {
         'used':             use_pso,
         'best_params':      None,
@@ -2238,7 +2021,7 @@ def inventory_collab_view(request):
                     pso_start = time.time()
                     global_pso_params, _, _ = pso_optimize_hyperparameters_global(
                         products_data,
-                        # num_generations = num_generations,
+                        num_generations = num_generations,
                         n_particles     = pso_n_particles,
                         n_iters         = pso_n_iters,
                         stockout_weight = stockout_weight,
@@ -2307,7 +2090,7 @@ def inventory_collab_view(request):
                     # Resolve final GA hyperparameters from PSO cache
                     if global_pso_params:
                         final_pop = global_pso_params['population_size']
-                        final_gen = global_pso_params['num_generations']
+                        final_gen = num_generations
                         final_cr  = global_pso_params['crossover_rate']
                         final_mr  = global_pso_params['mutation_rate']
                         pso_meta  = {
@@ -2390,23 +2173,10 @@ def inventory_collab_view(request):
                     first_c_hold    = biaya_simpan * round((first_S + first_s) / 2)
                     first_total_so  = round(sum(first_total_lost))
 
-                    # if first_std_daily > 0:
-                    #     def integrand_first(x):
-                    #         return (x - first_total_daily_dmd) * norm.pdf(x, first_mean_daily, first_std_daily)
-                    #     E_Rv_first, _ = quad(integrand_first, first_total_daily_dmd, np.inf)
-                    # else:
-                    #     E_Rv_first = 0.0
-
                     if first_std_daily > 0:
-                        z = (first_total_daily_dmd - first_mean_daily) / first_std_daily
-
-                        phi = norm.pdf(z)
-                        Phi = norm.cdf(z)
-
-                        E_Rv_first = first_std_daily * phi + (first_mean_daily - first_total_daily_dmd) * (1 - Phi)
-
-                        # numerical safety
-                        E_Rv_first = max(E_Rv_first, 0.0)
+                        def integrand_first(x):
+                            return (x - first_total_daily_dmd) * norm.pdf(x, first_mean_daily, first_std_daily)
+                        E_Rv_first, _ = quad(integrand_first, first_total_daily_dmd, np.inf)
                     else:
                         E_Rv_first = 0.0
 
@@ -2462,23 +2232,10 @@ def inventory_collab_view(request):
                     c_hold     = biaya_simpan * round((best_S + best_s) / 2)
                     total_so = round(sum(total_lost))
 
-                    # if std_daily > 0:
-                    #     def integrand_best(x):
-                    #         return (x - total_daily_dmd) * norm.pdf(x, mean_daily, std_daily)
-                    #     E_Rv_best, _ = quad(integrand_best, total_daily_dmd, np.inf)
-                    # else:
-                    #     E_Rv_best = 0.0
-
                     if std_daily > 0:
-                        z = (total_daily_dmd - mean_daily) / std_daily
-
-                        phi = norm.pdf(z)
-                        Phi = norm.cdf(z)
-
-                        E_Rv_best = std_daily * phi + (mean_daily - total_daily_dmd) * (1 - Phi)
-
-                        # numerical safety
-                        E_Rv_best = max(E_Rv_best, 0.0)
+                        def integrand_best(x):
+                            return (x - total_daily_dmd) * norm.pdf(x, mean_daily, std_daily)
+                        E_Rv_best, _ = quad(integrand_best, total_daily_dmd, np.inf)
                     else:
                         E_Rv_best = 0.0
 
@@ -3758,47 +3515,49 @@ def _parse_post_int(post, key, default):
 def format_seconds(seconds):
     return str(timedelta(seconds=round(seconds)))
 
-def _evaluate_particle_global(position, products_data):
-    pop_size, num_generations, crossover_rate, mutation_rate = _decode_particle(position)
-    
-    inner_pop = min(pop_size, PSO_INNER_POP)
+def _evaluate_particle_global(position, products_data, num_generations, stockout_weight=PSO_STOCKOUT_WEIGHT):
+    """
+    Evaluate a PSO particle against ALL products and return the average
+    composite fitness. This ensures PSO finds hyperparameters that work
+    well across the entire catalogue, not just one item.
+    """
+    pop_size, crossover_rate, mutation_rate = _decode_particle(position)
+    pop_size = min(pop_size, PSO_INNER_POP)
     inner_gen = min(num_generations, PSO_INNER_GEN)
 
     scores = []
-
     for product_data, daily_sales, daily_purchases in products_data:
         try:
             result = genetic_algorithm(
-                product_data,
-                inner_pop,
-                inner_gen,
-                crossover_rate,
-                mutation_rate,
-                daily_sales,
-                daily_purchases,
-                stockout_weight=0,  # let balanced_score control the tradeoff
+                product_data, pop_size, inner_gen,
+                crossover_rate, mutation_rate,
+                daily_sales, daily_purchases,
             )
-
-            baseline = _metrics_from_ga_result(result, initial=True)
-            best = _metrics_from_ga_result(result, initial=False)
-
-            scores.append(_balanced_score(best, baseline))
-
+            best_total_cost = result[16]
+            total_stockout = round(sum(result[9]))
+            scores.append(best_total_cost + stockout_weight * total_stockout)
         except Exception:
-            scores.append(float("inf"))
+            scores.append(float('inf'))
 
-    return float(np.mean(scores)) if scores else float("inf")
+    return float(np.mean(scores)) if scores else float('inf')
 
 def pso_optimize_hyperparameters_global(products_data,
-    n_particles=PSO_N_PARTICLES, n_iters=PSO_N_ITERS,
+    num_generations,
+    n_particles=PSO_N_PARTICLES,
+    n_iters=PSO_N_ITERS,
     w=PSO_W, c1=PSO_C1, c2=PSO_C2,
-    stockout_weight=PSO_STOCKOUT_WEIGHT):   # ← removed num_generations arg
+    stockout_weight=PSO_STOCKOUT_WEIGHT):
+    """
+    Run PSO once across all products to find a single unified hyperparameter
+    set. Each particle is scored as the average fitness across all items.
 
-    lo  = [PSO_BOUNDS['population_size'][0], PSO_BOUNDS['num_generations'][0],
-           PSO_BOUNDS['crossover_rate'][0],  PSO_BOUNDS['mutation_rate'][0]]
-    hi  = [PSO_BOUNDS['population_size'][1], PSO_BOUNDS['num_generations'][1],
-           PSO_BOUNDS['crossover_rate'][1],  PSO_BOUNDS['mutation_rate'][1]]
-    dim = 4
+    Returns best_params dict, best_score, history.
+    """
+    lo  = [PSO_BOUNDS['population_size'][0], PSO_BOUNDS['crossover_rate'][0],
+        PSO_BOUNDS['mutation_rate'][0]]
+    hi  = [PSO_BOUNDS['population_size'][1], PSO_BOUNDS['crossover_rate'][1],
+        PSO_BOUNDS['mutation_rate'][1]]
+    dim = 3
 
     positions  = [[random.uniform(lo[d], hi[d]) for d in range(dim)]
         for _ in range(n_particles)]
@@ -3807,7 +3566,7 @@ def pso_optimize_hyperparameters_global(products_data,
 
     personal_best_pos   = [p[:] for p in positions]
     personal_best_score = [
-        _evaluate_particle_global(p, products_data)
+        _evaluate_particle_global(p, products_data, num_generations, stockout_weight)
         for p in positions
     ]
 
@@ -3831,7 +3590,7 @@ def pso_optimize_hyperparameters_global(products_data,
                 positions[i][d] + velocities[i][d] for d in range(dim)
             ])
 
-            score = _evaluate_particle_global(positions[i], products_data)
+            score = _evaluate_particle_global(positions[i], products_data, num_generations, stockout_weight)
 
             if score < personal_best_score[i]:
                 personal_best_score[i] = score
@@ -3843,150 +3602,12 @@ def pso_optimize_hyperparameters_global(products_data,
 
         history.append(global_best_score)
 
-    pop_size, num_gen, cr, mr = _decode_particle(global_best_pos)
+    pop_size, cr, mr = _decode_particle(global_best_pos)
     best_params = {
         'population_size': pop_size,
-        'num_generations': num_gen,
+        'num_generations': num_generations,
         'crossover_rate':  round(cr, 4),
         'mutation_rate':   round(mr, 4),
     }
+
     return best_params, global_best_score, history
-
-STOCKOUT_TARGET_RATIO = 0.80   # stockout should be <= 90% of initial
-HOLD_LIMIT_RATIO      = 0.95   # hold cost max 15% above initial
-TOTAL_LIMIT_RATIO     = 0.90   # total cost should not exceed initial
-
-
-def _metrics_from_ga_result(result, initial=False):
-    product = result[14]
-
-    biaya_order  = product.get("biaya_order", product.get("biaya_pesan", 0))
-    biaya_simpan = product["biaya_simpan"]
-    biaya_kurang = product["biaya_kekurangan"]
-
-    if initial:
-        R = result[22]
-        s = result[23]
-        S = result[24]
-        T = result[25]
-        purchases_freq = result[26]
-        total_lost = result[27]
-    else:
-        R = result[18]
-        s = result[19]
-        S = result[20]
-        T = result[21]
-        purchases_freq = result[11]
-        total_lost = result[9]
-
-    R = max(int(round(R)), 1)
-    s = max(int(round(s)), 1)
-    S = max(int(round(S)), s + 1)
-    T = max(int(round(T)), 1)
-    purchases_freq = max(int(round(purchases_freq or 0)), 1)
-
-    stockout_total = round(sum(total_lost or []))
-
-    half_demand     = result[15][:result[21]]
-    mean_daily      = np.mean(half_demand) if half_demand else 0
-    std_daily       = np.std(half_demand, ddof=1) / np.sqrt(result[21]) if len(half_demand) > 1 else 1e-9
-    total_daily_dmd = round(sum(half_demand) / result[21]) if result[21] > 0 else 0
-
-    # Match your table formula
-    c_order = biaya_order * (T / (purchases_freq * R))
-    c_hold = biaya_simpan * round((S + s) / 2)
-
-    if std_daily > 0:
-        z = (total_daily_dmd - mean_daily) / std_daily
-
-        phi = norm.pdf(z)
-        Phi = norm.cdf(z)
-
-        E_Rv = std_daily * phi + (mean_daily - total_daily_dmd) * (1 - Phi)
-
-        # numerical safety
-        E_Rv = max(E_Rv, 0.0)
-    else:
-        E_Rv = 0.0
-
-    # Important: make stockout cost follow actual stockout pcs
-    c_stockout = biaya_kurang * stockout_total
-
-    c_total = c_order + c_hold + c_stockout
-
-    return {
-        "order": c_order,
-        "hold": c_hold,
-        "stockout_cost": c_stockout,
-        "total": c_total,
-        "stockout": stockout_total,
-    }
-
-
-def _balanced_score(best, baseline):
-    stockout_ratio = best["stockout"] / max(baseline["stockout"], 1)
-    hold_ratio     = best["hold"] / max(baseline["hold"], 1)
-    total_ratio    = best["total"] / max(baseline["total"], 1)
-
-    stockout_violation = max(0, stockout_ratio - STOCKOUT_TARGET_RATIO)
-    hold_violation     = max(0, hold_ratio - HOLD_LIMIT_RATIO)
-    total_violation    = max(0, total_ratio - TOTAL_LIMIT_RATIO)
-
-    feasible = (
-        stockout_ratio <= STOCKOUT_TARGET_RATIO and
-        hold_ratio <= HOLD_LIMIT_RATIO and
-        total_ratio <= TOTAL_LIMIT_RATIO
-    )
-
-    if feasible:
-        # Among feasible solutions, choose the cheapest total cost.
-        return total_ratio
-
-    # Infeasible solutions get large penalty.
-    # Stockout and total cost violations are the most important.
-    return (
-        1000
-        + 200 * stockout_violation
-        + 200 * total_violation
-        + 200 * hold_violation
-    )
-
-SQRT_2PI = math.sqrt(2.0 * math.pi)
-SQRT_2 = math.sqrt(2.0)
-
-
-def normal_pdf(z):
-    return math.exp(-0.5 * z * z) / SQRT_2PI
-
-
-def normal_cdf(z):
-    return 0.5 * (1.0 + math.erf(z / SQRT_2))
-
-
-def calculate_expected_shortage_er_v(demand, T):
-    T = max(int(round(T)), 1)
-
-    half_demand = demand[:T]
-
-    if not half_demand:
-        return 0.0
-
-    mean_daily = float(np.mean(half_demand))
-    total_daily_dmd = round(sum(half_demand) / T)
-
-    if len(half_demand) > 1:
-        std_daily = float(np.std(half_demand, ddof=1)) / math.sqrt(T)
-    else:
-        std_daily = 1e-9
-
-    if std_daily <= 0:
-        return 0.0
-
-    z = (total_daily_dmd - mean_daily) / std_daily
-
-    phi = normal_pdf(z)
-    Phi = normal_cdf(z)
-
-    E_Rv = std_daily * phi + (mean_daily - total_daily_dmd) * (1.0 - Phi)
-
-    return max(E_Rv, 0.0)
