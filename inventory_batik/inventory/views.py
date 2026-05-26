@@ -1784,12 +1784,16 @@ def _evaluate_particle(position, product_data, daily_sales, daily_purchases,
     # Keep a lightweight ceiling so PSO evaluation stays cheap.
     # PSO will still explore the full num_generations range in decode,
     # but each inner run is capped to avoid wall-time explosion.
-    inner_pop = min(pop_size, PSO_INNER_POP)
-    inner_gen = min(num_generations, PSO_INNER_GEN)
+    # inner_pop = min(pop_size, PSO_INNER_POP)
+    # inner_gen = min(num_generations, PSO_INNER_GEN)
 
     try:
         result          = genetic_algorithm(
-            product_data, inner_pop, inner_gen,
+            product_data,
+            # inner_pop,
+            # inner_gen,
+            pop_size,
+            num_generations,
             crossover_rate, mutation_rate,
             daily_sales, daily_purchases,
             stockout_weight=stockout_weight,
@@ -3761,8 +3765,8 @@ def format_seconds(seconds):
 def _evaluate_particle_global(position, products_data):
     pop_size, num_generations, crossover_rate, mutation_rate = _decode_particle(position)
     
-    inner_pop = min(pop_size, PSO_INNER_POP)
-    inner_gen = min(num_generations, PSO_INNER_GEN)
+    # inner_pop = min(pop_size, PSO_INNER_POP)
+    # inner_gen = min(num_generations, PSO_INNER_GEN)
 
     scores = []
 
@@ -3770,8 +3774,10 @@ def _evaluate_particle_global(position, products_data):
         try:
             result = genetic_algorithm(
                 product_data,
-                inner_pop,
-                inner_gen,
+                # inner_pop,
+                # inner_gen,
+                pop_size,
+                num_generations,
                 crossover_rate,
                 mutation_rate,
                 daily_sales,
