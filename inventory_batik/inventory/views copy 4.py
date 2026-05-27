@@ -983,8 +983,8 @@ def export_view(request):
 
 BO_BOUNDS = {
     'population_size': (10,   150),
-    'crossover_rate':  (0.6,  0.95),
-    'mutation_rate':   (0.01, 0.45),
+    'crossover_rate':  (0.5,  1.0),
+    'mutation_rate':   (0.01, 0.5),
 }
 
 # Budget ringan yang dipakai *di dalam* setiap evaluasi BO
@@ -1121,101 +1121,114 @@ def find_rss(to, product):
 # ---------------------------------------------------------------------------
 # Fitness / cost functions
 # ---------------------------------------------------------------------------
+# def min_fitness(product, demand, init_R, init_s, init_S, init_T,
+#                 purchases_freq, tot_lost, stockout_weight=500.0):
+#     """
+#     Compute total inventory cost for a given (R, s, S, T) combination.
+#     Returns (total_cost, total_stockout_units).
+#     """
+#     half_demand = demand[:int(init_T)]
+#     init_R      = max(init_R, 1)
+
+#     if purchases_freq <= 0:
+#         purchases_freq = 1
+
+#     tot_demand         = round(sum(half_demand))
+#     mean_daily_demand  = np.mean(half_demand) if half_demand else 0
+#     std_dev_monthly    = np.std(half_demand, ddof=1) if len(half_demand) > 1 else 0
+#     std_dev_daily      = std_dev_monthly / np.sqrt(init_T) if init_T > 0 else 1e-9
+#     total_daily_demand = round(tot_demand / init_T) if init_T > 0 else 0
+
+#     biaya_order = product.get("biaya_order", product.get("biaya_pesan", 0))
+
+#     c_order        = biaya_order * (init_T / (purchases_freq * init_R))
+#     c_hold         = (product["biaya_simpan"] * round((init_S + init_s) / 2)
+#                       + round((tot_demand * init_R) / purchases_freq))
+#     total_stockout = round(sum(tot_lost))
+
+#     # if std_dev_daily > 0:
+#     #     def integrand(x):
+#     #         return (x - total_daily_demand) * norm.pdf(x, mean_daily_demand, std_dev_daily)
+#     #     E_Rv, _ = quad(integrand, total_daily_demand, np.inf)
+#     # else:
+#     #     E_Rv = 0.0
+
+#     # c_stockout = product["biaya_kekurangan"] * E_Rv
+#     c_stockout = product["biaya_kekurangan"] * total_stockout
+#     c_total    = c_order + c_hold + c_stockout
+
+#     composite = c_total + stockout_weight * total_stockout
+
+#     return composite, total_stockout
+
 def min_fitness(product, demand, init_R, init_s, init_S, init_T,
-                purchases_freq, tot_lost, stockout_weight=1.0):
-    """
-    Compute total inventory cost for a given (R, s, S, T) combination.
-    Returns (total_cost, total_stockout_units).
-    """
-    half_demand = demand[:int(init_T)]
-    init_R      = max(init_R, 1)
+                purchases_freq=None, tot_lost=None,
+                stockout_weight=500.0,
+                baseline_stockout=None):
+    init_T = max(1, min(int(round(init_T)), len(demand)))
+    init_R = max(1, int(round(init_R)))
+    init_s = max(0, int(round(init_s)))
+    init_S = max(init_s + 1, int(round(init_S)))
 
-    if purchases_freq <= 0:
-        purchases_freq = 1
+    half_demand = demand[:init_T]
 
-    tot_demand         = round(sum(half_demand))
-    mean_daily_demand  = np.mean(half_demand) if half_demand else 0
-    std_dev_monthly    = np.std(half_demand, ddof=1) if len(half_demand) > 1 else 0
-    std_dev_daily      = std_dev_monthly / np.sqrt(init_T) if init_T > 0 else 1e-9
-    total_daily_demand = round(tot_demand / init_T) if init_T > 0 else 0
+    (
+        inventory_level_list,
+        purchases_list,
+        sales_list,
+        total_demand_list,
+        fresh_tot_lost,
+        max_inventory,
+        fresh_purchases_freq,
+        fresh_purchases_total,
+        restock_data,
+    ) = calculate_inventory_levels_rss(
+        half_demand,
+        init_R,
+        init_s,
+        init_S,
+    )
+
+    total_stockout = round(sum(fresh_tot_lost))
+    total_demand = round(sum(total_demand_list))
+    half_demand = round(sum(total_demand_list))
+    fresh_purchases_freq = max(fresh_purchases_freq, 1)
 
     biaya_order = product.get("biaya_order", product.get("biaya_pesan", 0))
+    biaya_simpan = product["biaya_simpan"]
+    biaya_kekurangan = product["biaya_kekurangan"]
 
-    c_order        = biaya_order * (init_T / (purchases_freq * init_R))
-    c_hold         = (product["biaya_simpan"] * round((init_S + init_s) / 2)
-                      + round((tot_demand * init_R) / purchases_freq))
-    total_stockout = round(sum(tot_lost))
+    tot_demand         = round(sum(half_demand))
+    mean_daily  = np.mean(half_demand) if half_demand else 0
+    std_monthly    = np.std(half_demand, ddof=1) if len(half_demand) > 1 else 0
+    std_daily      = std_monthly / np.sqrt(init_T) if init_T > 0 else 1e-9
+    total_daily_demand = round(tot_demand / init_T) if init_T > 0 else 0
 
-    if std_dev_daily > 0:
-        def integrand(x):
-            return (x - total_daily_demand) * norm.pdf(x, mean_daily_demand, std_dev_daily)
-        E_Rv, _ = quad(integrand, total_daily_demand, np.inf)
+    mod_pf   = max(purchases_freq, 1)
+    c_order  = biaya_order * (init_T / (mod_pf * init_R))
+    c_hold   = (biaya_simpan * round((init_S + init_s) / 2)
+                + round((purchases_freq * init_R) / mod_pf))
+    total_so = round(sum(tot_lost))
+
+    if std_daily > 0:
+        def integrand_best(x):
+            return (x - total_daily_demand) * norm.pdf(x, mean_daily, std_daily)
+        E_Rv, _ = quad(integrand_best, total_daily_demand, np.inf)
     else:
         E_Rv = 0.0
 
     c_stockout = product["biaya_kekurangan"] * E_Rv
-    # c_stockout = product["biaya_kekurangan"] * total_stockout
     c_total    = c_order + c_hold + c_stockout
 
-    composite = c_total
+    # Important: punish stockout that is worse than initial/baseline
+    if baseline_stockout is not None:
+        excess_stockout = max(0, total_stockout - baseline_stockout)
+    else:
+        excess_stockout = total_stockout
+
+    composite = c_total + (stockout_weight * excess_stockout)
 
     return composite, total_stockout
-
-# def min_fitness(product, demand, init_R, init_s, init_S, init_T,
-#                 purchases_freq=None, tot_lost=None,
-#                 stockout_weight=1.0,
-#                 baseline_stockout=None):
-#     init_T = max(1, min(int(round(init_T)), len(demand)))
-#     init_R = max(1, int(round(init_R)))
-#     init_s = max(0, int(round(init_s)))
-#     init_S = max(init_s + 1, int(round(init_S)))
-
-#     half_demand = demand[:init_T]
-
-#     (
-#         inventory_level_list,
-#         purchases_list,
-#         sales_list,
-#         total_demand_list,
-#         fresh_tot_lost,
-#         max_inventory,
-#         fresh_purchases_freq,
-#         fresh_purchases_total,
-#         restock_data,
-#     ) = calculate_inventory_levels_rss(
-#         half_demand,
-#         init_R,
-#         init_s,
-#         init_S,
-#     )
-
-#     total_stockout = round(sum(fresh_tot_lost))
-#     total_demand = round(sum(total_demand_list))
-#     fresh_purchases_freq = max(fresh_purchases_freq, 1)
-
-#     biaya_order = product.get("biaya_order", product.get("biaya_pesan", 0))
-#     biaya_simpan = product["biaya_simpan"]
-#     biaya_kekurangan = product["biaya_kekurangan"]
-
-#     c_order = biaya_order * fresh_purchases_freq
-
-#     # If biaya_simpan is per day, use sum(inventory_level_list).
-#     # If biaya_simpan is per period, use average inventory.
-#     avg_inventory = np.mean(inventory_level_list) if inventory_level_list else 0
-#     c_hold = biaya_simpan * avg_inventory
-
-#     c_stockout = biaya_kekurangan * total_stockout
-#     c_total = c_order + c_hold + c_stockout
-
-#     # Important: punish stockout that is worse than initial/baseline
-#     if baseline_stockout is not None:
-#         excess_stockout = max(0, total_stockout - baseline_stockout)
-#     else:
-#         excess_stockout = total_stockout
-
-#     composite = c_total + (stockout_weight * excess_stockout)
-
-#     return composite, total_stockout
 
 def calculate_inventory_cost(product_list, to_list):
     """Compute EOQ-based inventory cost for a list of products (used for histogram)."""
