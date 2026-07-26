@@ -1474,7 +1474,7 @@ def genetic_algorithm(product_data, population_size, num_generations,
 
 def _plot_inventory_level(inventory_level_list, upper_line, x_limit):
     fig, ax = plt.subplots(figsize=(18, 6))
-    ax.plot(inventory_level_list, linewidth=1.5)
+    ax.plot(inventory_level_list, linewidth=1.5, color="#70AD47")
     ax.axhline(upper_line, linewidth=2, color="grey", linestyle=":")
     ax.axhline(0,          linewidth=2, color="grey", linestyle=":")
     ax.set_xlim(0, x_limit)
@@ -1492,7 +1492,7 @@ def _plot_inventory_level(inventory_level_list, upper_line, x_limit):
 def _plot_stockout_hist(values, label='Stockout'):
     fig, ax = plt.subplots(figsize=(6, 4))
     if values:
-        sns.histplot(values, kde=False, color="#097969", ax=ax)
+        sns.histplot(values, kde=False, color="#70AD47", ax=ax)
         mean_val = np.mean(values)
         ax.set_title(f'{label} : Mean {mean_val:.3f}')
         ax.axvline(x=mean_val, color='k', alpha=0.5, ls='--')
@@ -2118,7 +2118,7 @@ def inventory_collab_view(request):
                 span_b = dt['timespan']
  
                 fig, ax = plt.subplots(figsize=(18, 6))
-                ax.plot(dt['first_stock_history'][:span_f], linewidth=1.5)
+                ax.plot(dt['first_stock_history'][:span_f], linewidth=1.5, color="#70AD47")
                 ax.set_xlim(0, span_f)
                 ax.set_ylabel('Inventory Level (pcs)', fontsize=18)
                 ax.set_xlabel('Day', fontsize=18)
@@ -2134,7 +2134,7 @@ def inventory_collab_view(request):
                 )
  
                 fig, ax = plt.subplots(figsize=(18, 6))
-                ax.plot(dt['stock_history'][:span_b], linewidth=1.5)
+                ax.plot(dt['stock_history'][:span_b], linewidth=1.5, color="#70AD47")
                 ax.set_xlim(0, span_b)
                 ax.set_ylabel('Inventory Level (pcs)', fontsize=18)
                 ax.set_xlabel('Day', fontsize=18)
@@ -2176,7 +2176,7 @@ def inventory_collab_view(request):
                     ('single_inventory_level',         'single_restock_plot',       best_T),
                 ]:
                     fig, ax = plt.subplots(figsize=(18, 6))
-                    ax.plot(dt[il_key], linewidth=1.5)
+                    ax.plot(dt[il_key], linewidth=1.5, color="#70AD47")
                     ax.set_xlim(0, span)
                     ax.set_ylabel('Inventory Level (pcs)', fontsize=18)
                     ax.set_xlabel('Day', fontsize=18)
@@ -2189,7 +2189,7 @@ def inventory_collab_view(request):
  
                 for fmid in dt['first_multiple_inventory_data']:
                     fig, ax = plt.subplots(figsize=(18, 6))
-                    ax.plot(fmid['inventory'], linewidth=1.5)
+                    ax.plot(fmid['inventory'], linewidth=1.5, color="#70AD47")
                     ax.set_ylabel('Inventory Level (pcs)', fontsize=18)
                     ax.set_xlabel('Day', fontsize=18)
                     buf = io.BytesIO()
@@ -2209,7 +2209,7 @@ def inventory_collab_view(request):
                     mid['inventory'] = new_inv
  
                     fig, ax = plt.subplots(figsize=(18, 6))
-                    ax.plot(mid['inventory'], linewidth=1.5)
+                    ax.plot(mid['inventory'], linewidth=1.5, color="#70AD47")
                     ax.set_ylabel('Inventory Level (pcs)', fontsize=18)
                     ax.set_xlabel('Day', fontsize=18)
                     buf = io.BytesIO()
@@ -2632,7 +2632,7 @@ def inventory_collab_input_view(request):
 
                     # Plotting inventory level for outlet
                     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(18, 6))
-                    plt.plot(first_inventory_level_list, linewidth=1.5)
+                    plt.plot(first_inventory_level_list, linewidth=1.5, color="#70AD47")
                     plt.axhline(first_S, linewidth=2, color="grey", linestyle=":")
                     plt.axhline(0, linewidth=2, color="grey", linestyle=":")
                     plt.xlim(0, first_T)
@@ -2712,7 +2712,7 @@ def inventory_collab_input_view(request):
 
                     # Plotting inventory level for outlet
                     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(18, 6))
-                    plt.plot(inventory_level_list, linewidth=1.5)
+                    plt.plot(inventory_level_list, linewidth=1.5, color="#70AD47")
                     plt.axhline(best_S, linewidth=2, color="grey", linestyle=":")
                     plt.axhline(0, linewidth=2, color="grey", linestyle=":")
                     plt.xlim(0, best_T)
@@ -2866,7 +2866,7 @@ def inventory_collab_input_view(request):
                 # FIRST DATA
                 # After processing all products for this outlet, generate the plot
                 fig, ax = plt.subplots(figsize=(18, 6))
-                ax.plot(first_combined_inventory_level, linewidth=1.5)
+                ax.plot(first_combined_inventory_level, linewidth=1.5, color="#70AD47")
                 ax.set_xlim(0, first_T)  # Ensure it stays within first_T days
                 ax.set_ylabel('Demand Level (pcs)', fontsize=18)
                 ax.set_xlabel('Day', fontsize=18)
@@ -2957,7 +2957,7 @@ def inventory_collab_input_view(request):
                 first_stockout_mean = dt['first_stockout_mean']
 
                 fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(18, 6))
-                plt.plot(first_stock_history_month, linewidth=1.5)
+                plt.plot(first_stock_history_month, linewidth=1.5, color="#70AD47")
                 # plt.axhline(5000, linewidth=2, color="grey", linestyle=":")
                 # plt.axhline(0, linewidth=2, color="grey", linestyle=":")
                 plt.xlim(0, dt['first_timespan'])
@@ -2989,7 +2989,7 @@ def inventory_collab_input_view(request):
                 stockout_mean = dt['stockout_mean']
 
                 fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(18, 6))
-                plt.plot(stock_history_month, linewidth=1.5)
+                plt.plot(stock_history_month, linewidth=1.5, color="#70AD47")
                 # plt.axhline(5000, linewidth=2, color="grey", linestyle=":")
                 # plt.axhline(0, linewidth=2, color="grey", linestyle=":")
                 plt.xlim(0, dt['timespan'])
@@ -3132,7 +3132,7 @@ def inventory_collab_input_view(request):
                 # FIRST DATA
                 # grafik inventory level
                 fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(18,6))
-                plt.plot(first_inventory_level_list, linewidth = 1.5)
+                plt.plot(first_inventory_level_list, linewidth = 1.5, color="#70AD47")
                 plt.axhline(best_S, linewidth=2, color="grey", linestyle=":")
                 plt.axhline(0, linewidth=2, color="grey", linestyle=":")
                 plt.xlim(0,60)
@@ -3148,7 +3148,7 @@ def inventory_collab_input_view(request):
                 # BEST DATA
                 # grafik inventory level
                 fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(18,6))
-                plt.plot(inventory_level_list, linewidth = 1.5)
+                plt.plot(inventory_level_list, linewidth = 1.5, color="#70AD47")
                 plt.axhline(best_S, linewidth=2, color="grey", linestyle=":")
                 plt.axhline(0, linewidth=2, color="grey", linestyle=":")
                 plt.xlim(0,60)
@@ -3436,7 +3436,7 @@ def _plot_bo_convergence(history):
     history adalah list running-minimum score per iterasi.
     """
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(history, linewidth=1.8, color="#1a6faf", marker='o', markersize=3)
+    ax.plot(history, linewidth=1.8, color="#70AD47", marker='o', markersize=3)
     ax.set_xlabel('BO Iteration', fontsize=13)
     ax.set_ylabel('Best Composite Cost', fontsize=13)
     ax.set_title('Bayesian Optimization Convergence — Hyperparameter Tuning', fontsize=14)
